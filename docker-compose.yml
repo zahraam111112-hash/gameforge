@@ -64,6 +64,25 @@ services:
         reservations: { cpus: "0.50", memory: 512M }
     security_opt: ["no-new-privileges:true"]
 
+  # The bot fleet lives apart from the site: 200 WebSocket clients in the same
+  # 1-CPU cgroup as the server they are testing measures the cgroup, not the
+  # server. Run it with: docker compose run --rm load
+  load:
+    image: gameforge:local
+    profiles: ["tools"]
+    command: ["node", "harness/loadtest.mjs"]
+    environment:
+      GAMEFORGE_WS: ws://site:8787/ws
+      GAMEFORGE_BOTS: "200"
+    volumes:
+      - ./:/app
+      - gameforge_node_modules:/app/node_modules
+    networks: [gameforge_net]
+    deploy:
+      resources:
+        limits: { cpus: "2.00", memory: 1024M, pids: 512 }
+    security_opt: ["no-new-privileges:true"]
+
 networks:
   gameforge_net:
     driver: bridge

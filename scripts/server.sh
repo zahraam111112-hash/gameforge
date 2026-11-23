@@ -31,8 +31,9 @@ case "${1:-status}" in
     "${COMPOSE[@]}" exec -T site node scripts/smoke.mjs http://127.0.0.1:8787
     ;;
   load)
-    # Inside the container the server listens on 8787, not the host's 9000.
-    "${COMPOSE[@]}" exec -T -e GAMEFORGE_WS=ws://127.0.0.1:8787/ws site node harness/loadtest.mjs
+    # A separate container: the bots must not share a CPU budget with the
+    # server they are measuring.
+    "${COMPOSE[@]}" --profile tools run --rm load
     ;;
   *)
     echo "usage: $0 {up|down|restart|status|logs [lines] [service]|smoke|load}" >&2
