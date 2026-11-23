@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "builds": 1,
+  "updatedAt": "2026-11-23T20:00:00.000Z",
+  "roadmap": [
+    "Complete story act one with a three-phase boss",
+    "Ranked battle royale with server-authoritative combat",
+    "Daily seeded challenge with a global leaderboard",
+    "Adaptive music that reacts to tension"
+  ]
+}

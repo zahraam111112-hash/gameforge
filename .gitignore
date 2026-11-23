@@ -1,0 +1,13 @@
+node_modules/
+*.log
+.DS_Store
+harness/.state/
+game/.stage/
+site/public/game/0.*/
+site/public/game/latest/
+!site/public/game/.gitkeep
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example

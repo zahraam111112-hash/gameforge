@@ -1,0 +1,13 @@
+node_modules
+.git
+game/.stage
+site/public/game/0.*
+site/public/game/latest
+devlog
+.env
+.env.*
+ssh
+playwright-report
+test-results
+*.log
+VERSIONS.md

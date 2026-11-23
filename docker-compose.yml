@@ -1,0 +1,69 @@
+# Isolated stack for /mnt/data/gameforge. Its own bridge network, its own folder,
+# and hard CPU/memory ceilings so a runaway agent round can never starve the host.
+name: gameforge
+
+services:
+  site:
+    build: .
+    image: gameforge:local
+    container_name: gameforge-site
+    restart: unless-stopped
+    command: ["node", "server/index.mjs"]
+    environment:
+      PORT: "8787"
+      HOST: "0.0.0.0"
+      NODE_OPTIONS: "--max-old-space-size=768"
+    ports:
+      - "127.0.0.1:9000:8787"
+    volumes:
+      - ./:/app
+      - gameforge_node_modules:/app/node_modules
+    networks: [gameforge_net]
+    deploy:
+      resources:
+        limits: { cpus: "1.00", memory: 1024M }
+        reservations: { cpus: "0.25", memory: 256M }
+    pids_limit: 256
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  harness:
+    image: gameforge:local
+    depends_on: { site: { condition: service_healthy } }
+    container_name: gameforge-harness
+    restart: unless-stopped
+    command: ["node", "harness/orchestrator.mjs"]
+    environment:
+      GAMEFORGE_API_KEY: ${GAMEFORGE_API_KEY:?GAMEFORGE_API_KEY is required}
+      GAMEFORGE_MODEL: "deepseek-v4.1-flash"
+      GAMEFORGE_LLM_ENDPOINT: "https://opencode.ai/zen/go/v1/chat/completions"
+      GAMEFORGE_ROUND_SLEEP_MS: "60000"
+      GAMEFORGE_SERVER: "http://site:8787"
+      NODE_OPTIONS: "--max-old-space-size=1536"
+      GIT_AUTHOR_NAME: "Navara Harness"
+      GIT_AUTHOR_EMAIL: "harness@gameforge.local"
+      GIT_COMMITTER_NAME: "Navara Harness"
+      GIT_COMMITTER_EMAIL: "harness@gameforge.local"
+    volumes:
+      - ./:/app
+      - gameforge_node_modules:/app/node_modules
+      - ./ssh:/root/.ssh:ro
+    networks: [gameforge_net]
+    deploy:
+      resources:
+        limits: { cpus: "2.00", memory: 2048M }
+        reservations: { cpus: "0.50", memory: 512M }
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  gameforge_net:
+    driver: bridge
+
+volumes:
+  gameforge_node_modules:

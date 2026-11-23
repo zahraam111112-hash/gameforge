@@ -1,0 +1,14 @@
+import { chromium } from 'playwright';
+const url = process.argv[3] ?? 'http://127.0.0.1:8787/';
+const b = await chromium.launch({ channel: 'chrome' });
+const pg = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const errors = [];
+pg.on('pageerror', (e) => errors.push('pageerror: ' + String(e)));
+pg.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+pg.on('response', (r) => { if (r.status() >= 400) errors.push(`http ${r.status()} ${r.url()}`); });
+await pg.goto(url, { waitUntil: 'networkidle' });
+await pg.waitForTimeout(2000);
+const snap = await pg.evaluate(() => globalThis.__navara?.snapshot?.() ?? null);
+await pg.screenshot({ path: process.argv[2], fullPage: false });
+console.log(JSON.stringify({ errors: [...new Set(errors)], snap }, null, 1).slice(0, 1400));
+await b.close();

@@ -1,0 +1,26 @@
+{
+  "name": "gameforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Navara — a self-improving 2D platformer built continuously by an agent harness",
+  "type": "module",
+  "workspaces": [
+    "game",
+    "server",
+    "site"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=game",
+    "build": "npm run build --workspace=game",
+    "start": "node server/index.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm run build && npm test && npm run smoke"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}
