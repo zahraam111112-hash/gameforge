@@ -22,7 +22,23 @@ function oneBot(n, stats) {
     let id = null;
     let frames = 0;
     let sawSelf = false;
-    const t = setTimeout(() => { try { ws.close(); } catch {} resolve({ ok: false, error: 'timeout', frames }); }, 30_000);
+    let settled = false;
+    let moves = 0;
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(t); clearInterval(pump); try { ws.close(); } catch {} resolve(r); };
+    const t = setTimeout(() => done({ ok: false, error: 'timeout', frames }), 30_000);
+
+    // Input on its own timer, not in response to a state message. The server
+    // sends deltas only when something changed, so a bot that waits for state
+    // before moving deadlocks: nobody moves, nothing changes, nothing is sent.
+    const pump = setInterval(() => {
+      if (ws.readyState !== 1) return;
+      const k = ++moves;
+      const dir = Math.sin(n + k / 8) > 0;
+      ws.send(JSON.stringify({
+        t: 'in', left: !dir, right: dir, jump: k % 22 < 3,
+        attack: k % 45 < 2, dash: k % 60 < 2, down: false,
+      }));
+    }, 50);
 
     ws.on('open', () => {
       const level = SPREAD ? `arena${Math.floor(n / ROOM_SIZE)}` : 'arena';
@@ -32,7 +48,7 @@ function oneBot(n, stats) {
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw.toString()); } catch { return; }
-      if (m.t === 'error') { clearTimeout(t); ws.close(); resolve({ ok: false, error: m.error, frames }); return; }
+      if (m.t === 'error') { done({ ok: false, error: m.error, frames }); return; }
       if (m.t === 'welcome' && m.id) id = m.id;
       if (m.t === 'state') {
         frames++;
@@ -40,25 +56,15 @@ function oneBot(n, stats) {
         for (const p of m.players ?? []) peers.set(p.id, p);
         for (const pid of m.gone ?? []) peers.delete(pid);
         if (peers.has(id)) sawSelf = true;
-        if (frames === 1 || frames % 6 === 0) {
-          if (ws.readyState === 1) {
-            const dir = Math.sin(n + frames / 20) > 0;
-            ws.send(JSON.stringify({
-              t: 'in', left: !dir, right: dir, jump: frames % 30 < 3,
-              attack: frames % 45 < 2, dash: frames % 90 < 2, down: false,
-            }));
-          }
-        }
-        if (frames === 60) {
-          clearTimeout(t);
+        if (frames >= 20 && sawSelf) {
           stats.maxPlayers = Math.max(stats.maxPlayers, peers.size);
           stats.winners += m.winner ? 1 : 0;
-          resolve({ ok: sawSelf, id, frames, players: peers.size, royale: n % ROYALE_EVERY === 0 });
+          done({ ok: true, id, frames, players: peers.size, royale: n % ROYALE_EVERY === 0 });
         }
       }
     });
-    ws.on('error', (e) => { clearTimeout(t); resolve({ ok: false, error: String(e.message ?? e), frames }); });
-    ws.on('close', () => { clearTimeout(t); resolve({ ok: sawSelf, id, frames, closed: true }); });
+    ws.on('error', (e) => done({ ok: false, error: String(e.message ?? e), frames }));
+    ws.on('close', () => done({ ok: sawSelf, id, frames, closed: true }));
   });
 }
 
