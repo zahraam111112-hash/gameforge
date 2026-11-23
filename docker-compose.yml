@@ -52,7 +52,9 @@ services:
     volumes:
       - ./:/app
       - gameforge_node_modules:/app/node_modules
-      - ./ssh:/root/.ssh:ro
+      # The repo's core.sshCommand points at this exact path, so the key works
+      # for `git push` from inside the container without touching ~/.ssh.
+      - ./secrets:/mnt/data/gameforge/secrets:ro
     networks: [gameforge_net]
     deploy:
       resources:
