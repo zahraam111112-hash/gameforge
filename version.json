@@ -1,7 +1,13 @@
 {
-  "version": "0.1.0",
-  "builds": 1,
-  "updatedAt": "2026-11-23T20:00:00.000Z",
+  "version": "0.1.1",
+  "builds": 2,
+  "updatedAt": "2026-11-23T22:12:01.932Z",
+  "tests": {
+    "total": 0,
+    "passed": 0
+  },
+  "theme": "Unblock the Run",
+  "round": 1,
   "roadmap": [
     "Complete story act one with a three-phase boss",
     "Ranked battle royale with server-authoritative combat",

@@ -21,6 +21,15 @@ export const ENEMY_TYPES = {
   boss:   { hp: 60, w: 34, h: 34, speed: 1.05, dmg: 24, color: '#ff3b5c', score: 400, jump: 0.1 },
 };
 
+/** Fallback bounty for anything that dies without a known ENEMY_TYPES entry. */
+export const DEFAULT_ENEMY_SCORE = 10;
+
+/** Kill bounty for an enemy type — the single source of truth for scoring.
+ *  Used by the engine when HP hits 0, so browser and headless play agree. */
+export function enemyScore(type, fallback = DEFAULT_ENEMY_SCORE) {
+  return ENEMY_TYPES[type]?.score ?? fallback ?? DEFAULT_ENEMY_SCORE;
+}
+
 export class World {
   constructor(levelId, seed = 1) {
     this.levelId = levelId;
