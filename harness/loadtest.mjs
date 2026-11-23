@@ -10,17 +10,23 @@ const PLAYERS = Number(process.env.GAMEFORGE_BOTS ?? 200);
 // correctly — the check is that it saw itself in a snapshot first.
 const ROYALE_EVERY = Number(process.env.GAMEFORGE_ROYALE_EVERY ?? 5);
 
+// Real players are spread across many rooms, so a fleet that packs everyone
+// into two rooms measures the worst possible broadcast cost, not the site.
+// SPREAD=1 gives every ROOM_SIZE-th bot its own room.
+const SPREAD = process.env.GAMEFORGE_SPREAD === '1';
+const ROOM_SIZE = Number(process.env.GAMEFORGE_ROOM_SIZE ?? 20);
+
 function oneBot(n, stats) {
   return new Promise((resolve) => {
     const ws = new WebSocket(URL);
     let id = null;
     let frames = 0;
     let sawSelf = false;
-    let lastSeen = 0;
-    const t = setTimeout(() => { try { ws.close(); } catch {} resolve({ ok: false, error: 'timeout', frames }); }, 20_000);
+    const t = setTimeout(() => { try { ws.close(); } catch {} resolve({ ok: false, error: 'timeout', frames }); }, 30_000);
 
     ws.on('open', () => {
-      ws.send(JSON.stringify({ t: 'join', mode: n % ROYALE_EVERY === 0 ? 'royale' : 'coop', level: 'arena', name: `bot${n}` }));
+      const level = SPREAD ? `arena${Math.floor(n / ROOM_SIZE)}` : 'arena';
+      ws.send(JSON.stringify({ t: 'join', mode: n % ROYALE_EVERY === 0 ? 'royale' : 'coop', level, name: `bot${n}` }));
     });
     ws.on('message', (raw) => {
       let m;
