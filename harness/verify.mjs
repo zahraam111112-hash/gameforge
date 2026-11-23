@@ -25,6 +25,20 @@ for (const id of Object.keys(LEVELS)) {
   for (const row of spec.rows) if (row.length !== spec.width) problems.push(`level ${id} has a row of width ${row.length} != ${spec.width}`);
 }
 
+// A level whose exit is walled in by solid tiles can never be finished — the bot
+// gate only proves it moves, so this is checked structurally.
+for (const id of Object.keys(LEVELS)) {
+  const rows = LEVELS[id].rows;
+  for (const marker of ['L', 'B']) {
+    let pos = null;
+    rows.forEach((row, y) => { const x = row.indexOf(marker); if (x >= 0) pos = { x, y }; });
+    if (!pos) continue;
+    const at = (x, y) => (rows[y] ?? '')[x] ?? '.';
+    const open = [[0, -1], [0, 1], [-1, 0], [1, 0]].map(([dx, dy]) => at(pos.x + dx, pos.y + dy)).filter((c) => c !== '#');
+    if (!open.length) problems.push(`level ${id} ${marker === 'L' ? 'exit' : 'boss'} at ${pos.x},${pos.y} is sealed in solid tiles`);
+  }
+}
+
 // Simulation: no NaN, no falling out of the world, and progress is not zero.
 for (const id of Object.keys(LEVELS)) {
   const r = simulate({ level: id, steps: 3600, seed: 3 });

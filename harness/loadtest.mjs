@@ -6,6 +6,9 @@ import WebSocket from 'ws';
 
 const URL = process.env.GAMEFORGE_WS ?? 'ws://127.0.0.1:9000/ws';
 const PLAYERS = Number(process.env.GAMEFORGE_BOTS ?? 200);
+// Royale is single-elimination, so a bot that dies has still been handled
+// correctly — the check is that it saw itself in a snapshot first.
+const ROYALE_EVERY = Number(process.env.GAMEFORGE_ROYALE_EVERY ?? 5);
 
 function oneBot(n, stats) {
   return new Promise((resolve) => {
@@ -17,7 +20,7 @@ function oneBot(n, stats) {
     const t = setTimeout(() => { try { ws.close(); } catch {} resolve({ ok: false, error: 'timeout', frames }); }, 20_000);
 
     ws.on('open', () => {
-      ws.send(JSON.stringify({ t: 'join', mode: n % 5 === 0 ? 'royale' : 'coop', level: 'arena', name: `bot${n}` }));
+      ws.send(JSON.stringify({ t: 'join', mode: n % ROYALE_EVERY === 0 ? 'royale' : 'coop', level: 'arena', name: `bot${n}` }));
     });
     ws.on('message', (raw) => {
       let m;
@@ -38,7 +41,8 @@ function oneBot(n, stats) {
         if (frames === 60) {
           clearTimeout(t);
           stats.maxPlayers = Math.max(stats.maxPlayers, m.players.length);
-          resolve({ ok: sawSelf, id, frames, players: m.players.length });
+          stats.winners += m.winner ? 1 : 0;
+          resolve({ ok: sawSelf, id, frames, players: m.players.length, royale: n % ROYALE_EVERY === 0 });
         }
       }
     });
@@ -47,7 +51,7 @@ function oneBot(n, stats) {
   });
 }
 
-const stats = { maxPlayers: 0 };
+const stats = { maxPlayers: 0, winners: 0 };
 const started = Date.now();
 // Join in waves so the handshake stays honest but the room really does fill.
 const results = [];
@@ -67,6 +71,7 @@ console.log(JSON.stringify({
   failed: errors.length,
   errors: byError,
   roomSize: stats.maxPlayers,
+  royaleWinnersSeen: stats.winners,
   seconds: Math.round((Date.now() - started) / 100) / 10,
 }, null, 2));
 
