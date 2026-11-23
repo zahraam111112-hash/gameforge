@@ -36,7 +36,7 @@ function oneBot(n, stats) {
       if (m.t === 'state') {
         frames++;
         const me = m.players?.find((p) => p.id === id);
-        if (me) { sawSelf = true; lastSeen = frames; }
+        if (me) sawSelf = true;
         if (frames % 6 === 0 && ws.readyState === 1) {
           const dir = Math.sin(n + frames / 20) > 0;
           ws.send(JSON.stringify({
