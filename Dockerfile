@@ -4,7 +4,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates curl tini && \
+      git ca-certificates curl tini openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
