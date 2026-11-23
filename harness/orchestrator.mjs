@@ -192,15 +192,22 @@ function versionsIndex() {
   return lines.join('\n');
 }
 
+// TAP, not JSON: node has no built-in json reporter, so the old version caught
+// its own "cannot find package 'json'" and reported 0/0 to the public site.
 function countTests() {
   try {
-    const out = execFileSync('node', ['--test', '--test-reporter', 'json', 'test/world.test.mjs'],
+    const out = execFileSync('node', ['--test', '--test-reporter', 'tap', 'test/world.test.mjs', 'test/rooms.test.mjs'],
       { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const last = out.trim().split('\n').filter((l) => l.startsWith('{')).pop();
-    const report = JSON.parse(last ?? '{}');
-    const total = report.tests?.length ?? 0;
-    return { total, passed: report.tests?.filter((t) => t.ok).length ?? 0 };
-  } catch { return { total: 0, passed: 0 }; }
+    const passed = (out.match(/^ok \d+/gm) ?? []).length;
+    const failed = (out.match(/^not ok \d+/gm) ?? []).length;
+    return { total: passed + failed, passed };
+  } catch (e) {
+    // A failing suite still prints TAP to stderr; count what it produced.
+    const text = String(e.stdout ?? '');
+    const passed = (text.match(/^ok \d+/gm) ?? []).length;
+    const failed = (text.match(/^not ok \d+/gm) ?? []).length;
+    return { total: passed + failed, passed };
+  }
 }
 
 function copyDir(src, dest) {
