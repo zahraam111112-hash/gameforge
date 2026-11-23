@@ -18,11 +18,62 @@ export const ENEMY_TYPES = {
   enemy1: { hp: 2, w: 12, h: 12, speed: 0.7, dmg: 8,  color: '#ff6b6b', score: 10, jump: 0 },
   enemy2: { hp: 4, w: 14, h: 14, speed: 1.15, dmg: 12, color: '#ff9f43', score: 25, jump: 0.22 },
   enemy3: { hp: 7, w: 16, h: 18, speed: 1.45, dmg: 18, color: '#d94bff', score: 50, jump: 0.3 },
-  boss:   { hp: 60, w: 34, h: 34, speed: 1.05, dmg: 24, color: '#ff3b5c', score: 400, jump: 0.1 },
+  // The boss is an escalation, not a grind: 24 hp against a 3 hp strike is
+  // eight contact exchanges. Its cycle/dash pattern is untouched — the fight is
+  // short because the numbers are honest, not because the boss stopped moving.
+  boss:   { hp: 24, w: 34, h: 34, speed: 1.05, dmg: 24, color: '#ff3b5c', score: 400, jump: 0.1 },
 };
+
+/** Frames between strikes. One constant for everything so the boss fight is
+ *  scored in the same cadence the rest of the game uses (a full 5 hp enemy3
+ *  still needs three swings of the same blade). */
+export const ATTACK_CD = 12;
+
+/** How much one strike is worth before the target multiplier is applied. */
+export const STRIKE_DAMAGE = 1;
+
+/** Multiplier damageEnemy applies when the target is a boss: 3 damage per
+ *  swing against the boss' 24 hp is eight contact exchanges — a short, sharp
+ *  gate rather than a grind. Everything else keeps taking base strike damage,
+ *  so story enemies and their sims are unchanged. The multiplier is applied in
+ *  damageEnemy alone; bounty stays single-source. */
+export const BOSS_DAMAGE_MULT = 3;
+
+/** Bosses are HP sponges by design, so chip damage must not stack up: the
+ *  i-frames on a non-boss also protect the boss, which paces the fight to the
+ *  attack cadence instead of to how fast the player can mash. */
+export const BOSS_HURT_FRAMES = 8;
+
+/** Stomps stay at 2 so a boss is not beaten by bouncing on it. */
+export const STOMP_DAMAGE = 2;
 
 /** Fallback bounty for anything that dies without a known ENEMY_TYPES entry. */
 export const DEFAULT_ENEMY_SCORE = 10;
+
+/* ── Arena waves ────────────────────────────────────────────────────────────
+ * The arena has no hand-placed enemies: the constructor seeds deterministic,
+ * seeded-RNG-driven surges through the same spawnDirectionalSurge() path the
+ * story stages use, and the exit only opens once every wave is cleared. */
+
+/** Sizes of each wave. The first wave is scaled by the seed (see _seedArena). */
+export const ARENA_WAVE_SIZES = [4, 6];
+
+/** Frames after which the next wave is forced in even if the last one is
+ *  still on its feet — a stalled fight must not deadlock the arena. */
+export const ARENA_WAVE_TIMEOUT = 1500;
+
+/** Hard cap on live enemies. Rooms of hundreds of players share this world, so
+ *  an uncapped surge would be O(players × enemies) physics again. */
+export const ARENA_MAX_ENEMIES = 10;
+
+/** Frames of silence between two 'exitLocked' events, so a player standing on
+ *  a locked gate hears one deny sting instead of sixty per second. */
+export const EXIT_LOCKED_COOLDOWN = 30;
+
+/** Enemy mix used by surges — the same creatures the story stages place. */
+export const SURGE_TYPES = ['enemy1', 'enemy1', 'enemy2', 'enemy3'];
+
+export const isEnemyAlive = (e) => Boolean(e) && e.kind === 'enemy' && !e.dead;
 
 /** How many one-shot events the engine will hold before dropping the oldest.
  *  Consumers (main.js) drain every fixed step, so this is only reached by
@@ -61,8 +112,118 @@ export class World {
     this.events = [];
     this.status = 'playing'; // playing | won | lost
     this.keys = 0;
-    for (const s of parsed.spawns) this._spawn(s);
+    // Arena bookkeeping. Story stages finish on their 'L' exit or their boss;
+    // the arena finishes when every seeded wave has been cleared.
+    this.wave = 0;
+    this.wavesTotal = 0;
+    this.wavesCleared = 0;
+    this.waveTimer = 0;
+    this.exitLockedT = 0;
+    this.waveSpawns = [];
+
+
+    // Seeded before any spawn so every construction with the same seed builds
+    // the same world: the surge sizes, the enemy mix, the entry side and the
+    // story enemies' first heading all come off this one stream.
     this.rng = mulberry(seed);
+    for (const s of parsed.spawns) this._spawn(s);
+    if (levelId === 'arena') this._seedArenaWaves();
+  }
+
+  /** Seed the arena's deterministic surge schedule: the first wave is sized
+   *  from the RNG stream (so seeds differ), the second arrives either when the
+   *  first is cleared or after ARENA_WAVE_TIMEOUT frames. Nothing spawns here —
+   *  the constructor stays cheap; _updateWaves() pulls them in on frame 0 of
+   *  the first tick, through spawnDirectionalSurge() like every story stage. */
+  _seedArenaWaves() {
+    const [base, second] = ARENA_WAVE_SIZES;
+    const jitter = Math.floor(this.rng() * 3) - 1; // -1 | 0 | +1, stable per seed
+    const size = clamp(base + jitter, 2, base + 1);
+    this.wavesTotal = 2;
+    this.wavesCleared = 0;
+    this.wave = 0;
+    this.waveTimer = 0;
+    this.waveSpawns = [size, second];
+  }
+
+  /** Live enemies that belong to the arena/boss gate (not coins, spikes, exit). */
+  countAlive(type = null) {
+    let n = 0;
+    for (const e of this.entities) if (isEnemyAlive(e) && (type === null || e.type === type)) n++;
+    return n;
+  }
+
+  /** True when the battle scope the exit is gated on is satisfied: no boss is
+   *  alive and, in the arena, every seeded wave has been cleared and spawned. */
+  wavesCleared() {
+    return this.wavesTotal > 0
+      && this.wavesCleared >= this.wavesTotal
+      && this.wave === this.wavesTotal;
+  }
+
+  exitUnlocked() {
+    if (this.countAlive('boss') > 0) return false;
+    if (this.levelId === 'arena') return this.wavesCleared();
+    return true;
+  }
+
+  /** Advance the arena schedule. Runs once per fixed step, before the players,
+   *  so the world state a client receives is the same for every player. */
+  _updateWaves() {
+    if (this.levelId !== 'arena' || this.wavesTotal === 0) return;
+    if (this.wave >= this.wavesTotal) return; // nothing left to spawn
+    this.waveTimer++;
+    const alive = this.countAlive('enemy') + this.countAlive('boss');
+    const spawnNow = this.wave === 0
+      ? true                         // frame 0: the arena is never empty
+      : alive === 0 || this.waveTimer >= ARENA_WAVE_TIMEOUT;
+    if (!spawnNow) return;
+    if (this.wave > 0) this.wavesCleared = this.wave; // the previous wave is down
+    const wanted = this.waveSpawns[this.wave] ?? 0;
+    // The cap is per-world, not per-wave: rooms of hundreds of players share it.
+    const n = clamp(wanted, 0, Math.max(0, ARENA_MAX_ENEMIES - alive));
+    this.spawnDirectionalSurge(n);
+    this.wave++;
+    this.waveTimer = 0;
+    if (this.wave >= this.wavesTotal && alive === 0) this.wavesCleared = this.wavesTotal;
+  }
+
+  /** Spawn `n` enemies from both sides of the stage, sweeping inward. The paths
+   *  and types come off this.seeded stream, so a replay of the same seed places
+   *  the same creatures at the same coordinates — sims stay comparable across
+   *  rounds. Story stages call this too: one spawn path, not two. */
+  spawnDirectionalSurge(n = 1, opts = {}) {
+    const spawned = [];
+    const total = Math.max(0, Math.floor(n));
+    for (let i = 0; i < total; i++) {
+      const type = opts.type ?? SURGE_TYPES[Math.floor(this.rng() * SURGE_TYPES.length)] ?? 'enemy1';
+      const t = ENEMY_TYPES[type] ?? ENEMY_TYPES.enemy1;
+      const left = i % 2 === 0;
+      const inset = 12 + Math.floor(this.rng() * 48);
+      const x = clamp(left ? inset : this.width - inset - t.w, 2, this.width - t.w - 2);
+      // High enough to be seen walking in, low enough that gravity does the
+      // rest; the player's own spawn floor is one tile below.
+      const spread = Math.floor(this.rng() * 40);
+      const y = clamp(this.spawnPoint.y - t.h - 8 - spread, 2, this.height - t.h - TILE);
+      const e = this._makeEnemy(type, x, y);
+      e.vx = t.speed * (left ? 1 : -1) * (0.8 + this.rng() * 0.4);
+      e.dir = left ? 1 : -1;
+      this.entities.push(e);
+      spawned.push(e);
+    }
+    return spawned;
+  }
+
+  /** The one place an enemy object is built, so stats, bounty and flags can
+   *  never drift between story spawns, surges and the boss. */
+  _makeEnemy(type, x, y) {
+    const t = ENEMY_TYPES[type] ?? ENEMY_TYPES.enemy1;
+    return {
+      type, kind: 'enemy', x, y, w: t.w, h: t.h,
+      vx: t.speed * (this.rng() < 0.5 ? -1 : 1), vy: 0, hp: t.hp, maxHp: t.hp,
+      dmg: t.dmg, score: t.score, onGround: false, hurtT: 0, dead: false,
+      fell: false, jumpChance: t.jump, boss: type === 'boss', attackT: 0, phase: 0,
+    };
   }
 
   _spawn(s) {
@@ -79,13 +240,7 @@ export class World {
     } else if (s.type === 'spike') {
       this.entities.push({ type: 'spike', x: s.x, y: s.y, w: 16, h: 5, dead: false, dmg: 14 });
     } else if (s.type in ENEMY_TYPES) {
-      const t = ENEMY_TYPES[s.type];
-      this.entities.push({
-        type: s.type, kind: 'enemy', x: s.x, y: s.y, w: t.w, h: t.h,
-        vx: t.speed * (this.rng && this.rng() < 0.5 ? -1 : 1), vy: 0, hp: t.hp, maxHp: t.hp,
-        dmg: t.dmg, score: t.score, onGround: false, hurtT: 0, dead: false,
-        jumpChance: t.jump, boss: s.type === 'boss', attackT: 0, phase: 0,
-      });
+      this.entities.push(this._makeEnemy(s.type, s.x, s.y));
     }
   }
 
@@ -165,9 +320,15 @@ export class World {
         // Bounced into a wall.
         e.vx = (e.wallDir ?? 1) * Math.abs(e.vx || (e.boss ? 1.05 : 0.7)) * -1;
       }
-      if (e.vx === 0) e.vx = (e.wallDir ?? 1) * (e.boss ? 1.05 : 0.7);
+      if (e.vx === 0) e.vx = (this.rng() < 0.5 ? -1 : 1) * (e.boss ? 1.05 : 0.7);
       e.wallDir = e.vx > 0 ? 1 : -1;
-      if (e.y > this.height + 64) e.dead = true;
+      // A pit is not a kill. This used to be `e.dead = true`, which handed out
+      // bounty for an enemy that walked off a ledge on its own — the player got
+      // paid for nothing, and the arena's "wave cleared" check could not tell a
+      // real kill from a fall. Falling now pays nothing (attacker is null),
+      // marks e.fell for the renderer, and still routes through damageEnemy so
+      // there is exactly one place that decides what death means.
+      if (e.y > this.height + 64) this.damageEnemy(e, e.hp, 0, null, { fell: true });
     }
   }
 
@@ -221,13 +382,14 @@ export class World {
     if (p.onGround) { p.energy = Math.min(100, p.energy + 1.1); p.dashT = 0; }
     p.x = clamp(p.x, 0, this.width - p.w);
 
-    // Strike.
+    // Strike. One constant for the cadence and one for the damage: the boss
+    // multiplier lives in damageEnemy, so "how hard do I hit" has a single home.
     if (input.attack && p.attackCd <= 0) {
-      p.attackCd = 16; p.attackT = 8;
+      p.attackCd = ATTACK_CD; p.attackT = 8;
       const hit = { x: p.x + (dirForDash > 0 ? p.w - 2 : -14), y: p.y + 2, w: 18, h: p.h - 4 };
       for (const e of this.entities) {
         if (e.kind !== 'enemy' || e.dead) continue;
-        if (aabb(hit, e)) this.damageEnemy(e, 1, dirForDash, p);
+        if (aabb(hit, e)) this.damageEnemy(e, STRIKE_DAMAGE, dirForDash, p);
       }
     }
     if (p.attackT > 0) p.attackT--;
