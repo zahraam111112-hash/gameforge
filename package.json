@@ -13,7 +13,7 @@
     "dev": "npm run dev --workspace=game",
     "build": "npm run build --workspace=game",
     "start": "node server/index.mjs",
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test test/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "verify": "npm run build && npm test && npm run smoke"
   },

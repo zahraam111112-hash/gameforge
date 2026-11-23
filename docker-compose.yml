@@ -25,7 +25,10 @@ services:
         reservations: { cpus: "0.25", memory: 256M }
     security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # http.get, not fetch: a fresh node process pays ~2-5s for fetch's bootstrap
+      # (undici + DNS), which is longer than this timeout — the check then times
+      # out against a server that is perfectly healthy.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/healthz',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

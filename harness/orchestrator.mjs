@@ -159,8 +159,11 @@ async function main() {
 
       console.log(`[harness] shipped ${vNext.version} in ${((Date.now() - started) / 1000).toFixed(0)}s`);
     } catch (e) {
-      console.error('[harness] round failed:', e);
+      console.error('[harness] round failed:', e.message ?? e);
       devlog.append({ kind: 'decision', agent: 'orchestrator', title: `Round ${round} failed`, why: String(e.message ?? e).slice(0, 800) });
+      // A round that dies mid-build leaves half-finished edits behind; the next
+      // round must start from the last shipped state or quality drifts downward.
+      if (process.env.GAMEFORGE_REVERT_ON_FAIL !== '0') await revertToHead();
     }
     await sleep(ROUND_SLEEP);
   }

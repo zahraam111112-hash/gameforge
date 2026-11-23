@@ -95,10 +95,14 @@ async function runToolLoop({ root, fsTools, tools, messages, maxTurns, jsonHint 
     messages.push({ role: 'assistant', content: out.content || null, tool_calls: out.toolCalls });
     for (const call of out.toolCalls) {
       let result;
+      const args = (() => { try { return JSON.parse(call.function.arguments || '{}'); } catch { return {}; } })();
+      // One line per action: the round is long enough that without this the
+      // container log is silent for minutes and looks like a hang.
+      const target = args.path ?? args.cmd ?? args.pattern ?? args.level ?? '';
+      console.log(`  · ${call.function.name}${target ? ` ${String(target).slice(0, 70)}` : ''}`);
       try {
         const fn = fsTools[call.function.name];
         if (!fn) throw new Error(`unknown tool ${call.function.name}`);
-        const args = JSON.parse(call.function.arguments || '{}');
         result = await fn(args);
       } catch (e) {
         result = { error: String(e.message ?? e) };
@@ -111,9 +115,12 @@ async function runToolLoop({ root, fsTools, tools, messages, maxTurns, jsonHint 
     }
   }
   if (jsonHint) {
+    // The model reasons before answering, so the finalize turn needs the same
+    // generous budget as the working turns — at 4096 it runs out mid-thought.
     const j = await jsonChat({
       messages: [...messages, { role: 'user', content: 'Now return ONLY the JSON object requested above.' }],
       sessionTag: 'finalize',
+      maxTokens: 6000,
     });
     return j;
   }

@@ -11,22 +11,37 @@ const MAX_TOKENS_CAP = 16_000;
 
 let seq = 0;
 
+// A stalled request with no deadline parks the whole forever-loop. Reasoning
+// calls legitimately take minutes, so the deadline is generous but finite.
+const REQUEST_TIMEOUT_MS = Number(process.env.GAMEFORGE_LLM_TIMEOUT_MS ?? 240_000);
+
 async function post(body, sessionTag) {
   const key = process.env.GAMEFORGE_API_KEY;
   if (!key) throw new Error('GAMEFORGE_API_KEY is not set');
-  const r = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${key}`,
-      'x-opencode-session': `${sessionTag}-${process.pid}-${++seq}`,
-    },
-    body: JSON.stringify(body),
-  });
+  let r;
+  try {
+    r = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${key}`,
+        'x-opencode-session': `${sessionTag}-${process.pid}-${++seq}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    // Timeout or transient network fault: retry rather than kill the round.
+    return { retry: true, status: 0, error: String(e.message ?? e) };
+  }
   if (r.status === 429 || r.status >= 500) return { retry: true, status: r.status };
   const text = await r.text();
   if (!r.ok) throw new Error(`LLM ${r.status}: ${text.slice(0, 300)}`);
-  return { retry: false, json: JSON.parse(text) };
+  try {
+    return { retry: false, json: JSON.parse(text) };
+  } catch {
+    return { retry: true, status: 0, error: 'malformed response body' };
+  }
 }
 
 export async function chat({ messages, tools, maxTokens = 4096, temperature = 0.3, sessionTag = 'navara' }) {
