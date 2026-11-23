@@ -212,7 +212,7 @@ export class World {
       const hit = { x: p.x + (dirForDash > 0 ? p.w - 2 : -14), y: p.y + 2, w: 18, h: p.h - 4 };
       for (const e of this.entities) {
         if (e.kind !== 'enemy' || e.dead) continue;
-        if (aabb(hit, e)) this.damageEnemy(e, 1, dirForDash);
+        if (aabb(hit, e)) this.damageEnemy(e, 1, dirForDash, p);
       }
     }
     if (p.attackT > 0) p.attackT--;
@@ -232,7 +232,7 @@ export class World {
       if (e.kind !== 'enemy' || e.dead) continue;
       if (aabb(p, e)) {
         const stomping = p.vy > 1 && p.y + p.h - p.vy <= e.y + 4;
-        if (stomping) { this.damageEnemy(e, 2, 0); p.vy = -7; p.energy = Math.min(100, p.energy + 12); }
+        if (stomping) { this.damageEnemy(e, 2, 0, p); p.vy = -7; p.energy = Math.min(100, p.energy + 12); }
         else this.hurtPlayer(p, e.dmg, e.x + e.w / 2);
       }
     }
@@ -240,12 +240,18 @@ export class World {
     if (p.y > this.height + 48) { this.hurtPlayer(p, 999); this.status = 'lost'; }
   }
 
-  damageEnemy(e, amount, knockDir = 0) {
+  damageEnemy(e, amount, knockDir = 0, attacker = null) {
     if (e.hurtT > 0 && !e.boss) return false;
     e.hp -= amount;
     e.hurtT = 8;
     if (knockDir) e.vx = knockDir * 2.2;
-    if (e.hp <= 0) { e.dead = true; this.player?.score && 0; return true; }
+    // Bounty is awarded here, in the engine, so a headless run and a browser
+    // run score identically — the renderer only adds the visual feedback.
+    if (e.hp <= 0) {
+      e.dead = true;
+      if (attacker) attacker.score += enemyScore(e.type, e.score);
+      return true;
+    }
     return false;
   }
 

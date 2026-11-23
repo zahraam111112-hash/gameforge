@@ -1,4 +1,4 @@
-import { World, makePlayer } from './world.js';
+import { World, makePlayer, ENEMY_TYPES } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';
@@ -158,10 +158,11 @@ function collectRegisters() {
   if (player.hp > lastHp) lastHp = player.hp;
   for (const e of world.entities) {
     if (e.kind === 'enemy' && e.dead && !e._fx) {
+      // Score is already awarded by world.damageEnemy, which is what keeps a
+      // headless run and a browser run in agreement. This is presentation only.
       e._fx = true;
       renderer.burst(e.x + e.w / 2, e.y + e.h / 2, e.type === 'boss' ? '#ffd447' : '#ff9f43', e.boss ? 40 : 10, e.boss ? 4 : 2.4);
       if (e.boss) renderer.kick(10);
-      player.score += e.score;
       audio.hit();
     }
   }
@@ -178,12 +179,15 @@ function updateHud() {
 function spawnSurge(n) {
   const types = ['enemy1', 'enemy1', 'enemy2', 'enemy3'];
   for (let i = 0; i < n; i++) {
-    const t = types[Math.floor(Math.random() * types.length)];
+    const type = types[Math.floor(Math.random() * types.length)];
+    // Stats come from the shared table so a surge enemy is the same creature
+    // the story levels use — HP, damage and bounty all agree.
+    const t = ENEMY_TYPES[type];
     world.entities.push({
-      type: t, kind: 'enemy', x: Math.random() * (world.width - 40) + 20, y: 32,
-      w: 12, h: 14, vx: (Math.random() < 0.5 ? -1 : 1) * 0.9, vy: 0,
-      hp: t === 'enemy3' ? 7 : t === 'enemy2' ? 4 : 2, maxHp: 7, dmg: 10, score: 15,
-      onGround: false, hurtT: 0, dead: false, jumpChance: 0.12,
+      type, kind: 'enemy', x: Math.random() * (world.width - 40) + 20, y: 32,
+      w: t.w, h: t.h, vx: (Math.random() < 0.5 ? -1 : 1) * t.speed, vy: 0,
+      hp: t.hp, maxHp: t.hp, dmg: t.dmg, score: t.score,
+      onGround: false, hurtT: 0, dead: false, jumpChance: t.jump,
     });
   }
 }
