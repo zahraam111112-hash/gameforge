@@ -53,8 +53,13 @@ export class Room {
         }
         continue;
       }
-      this.world.tickPlayerOnly?.(p, p.input, this.world);
+      // Physics for this player only. Enemy AI is world state, so it runs once
+      // per tick below — running it per player cost O(players × enemies) and
+      // was what capped the room at ~80 players on one core.
+      this.world.stepPlayer(p, p.input);
+      if (p.hp <= 0 && !p.dead) { p.dead = true; p.respawnT = 90; }
     }
+    this.world.updateEnemies();
     if (this.kind === 'royale') this._royaleCombat();
   }
 
