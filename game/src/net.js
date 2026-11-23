@@ -33,9 +33,13 @@ export class Net {
         if (msg.room) this.room = msg.room;
         this._status('joined');
       } else if (msg.t === 'state') {
-        this.peers = new Map(msg.players.map((p) => [p.id, p]));
+        // The server sends everyone on join and only changes after that, so
+        // peers are merged, never replaced — a replace would erase the room.
+        for (const p of msg.players ?? []) this.peers.set(p.id, p);
+        for (const id of msg.gone ?? []) this.peers.delete(id);
         this.serverFrame = msg.frame;
         this.room = msg.room ?? this.room;
+        this.winner = msg.winner ?? null;
       }
       this.onMessage?.(msg);
     };

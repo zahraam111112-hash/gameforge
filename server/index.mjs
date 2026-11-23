@@ -126,7 +126,10 @@ wss.on('connection', (ws) => {
       // once, waiting up to a tick for the broadcast is long enough that a slow
       // client can be dropped before it ever sees itself in a room it joined.
       ws.send(JSON.stringify({ t: 'welcome', id, name: id, room: kind }));
-      ws.send(JSON.stringify(ws.room.snapshot()));
+      // Full snapshot on join, deltas after: the client needs everyone once.
+      ws.view = null;
+      ws.winnerSeen = null;
+      sendState(ws, ws.room);
     } else if (msg.t === 'name' && ws.room) {
       const pl = ws.room.players.get(id);
       if (pl) pl.name = String(msg.name).slice(0, 16);
@@ -140,13 +143,28 @@ wss.on('connection', (ws) => {
   ws.on('close', () => { ws.room?.remove(id); });
 });
 
-// Broadcast snapshots at the sim rate.
+// A client sees everyone on join and only changes afterwards.
+function sendState(ws, room) {
+  const d = room.delta(ws.view);
+  ws.view = d.keys;
+  ws.winnerSeen = d.winner;
+  ws.send(JSON.stringify({ t: 'state', room: room.kind, frame: d.frame, winner: d.winner, players: d.players, gone: d.gone }));
+}
+
+// Broadcast deltas at the sim rate. Each client keeps its own view, so a room
+// of N players costs O(N) rather than O(N×N), and a client that has seen
+// nothing new receives nothing.
 setInterval(() => {
   for (const room of rooms.rooms.values()) {
     if (!room.players.size) continue;
-    const snap = JSON.stringify(room.snapshot());
     for (const ws of wss.clients) {
-      if (ws.room === room && ws.readyState === 1) ws.send(snap);
+      if (ws.room !== room || ws.readyState !== 1) continue;
+      const d = room.delta(ws.view);
+      const changed = d.players.length || d.gone.length || d.winner !== ws.winnerSeen;
+      ws.view = d.keys;
+      ws.winnerSeen = d.winner;
+      if (!changed) continue;
+      ws.send(JSON.stringify({ t: 'state', room: room.kind, frame: d.frame, winner: d.winner, players: d.players, gone: d.gone }));
     }
   }
 }, 1000 / 30).unref();

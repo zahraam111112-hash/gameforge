@@ -129,6 +129,25 @@ export class Room {
       })),
     };
   }
+
+  /** Everything that changed since the last snapshot this client received.
+   *  A room of N players used to send N copies of N players every tick; a delta
+   *  is proportional to who actually moved, and an empty room costs nothing. */
+  delta(seen) {
+    const players = [];
+    const next = new Map();
+    for (const p of this.players.values()) {
+      const rec = {
+        id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
+        facing: p.facing, hp: p.hp, score: p.score ?? 0, dead: !!p.dead,
+      };
+      const key = `${rec.x},${rec.y},${rec.facing},${rec.hp},${rec.score},${rec.dead ? 1 : 0},${rec.name}`;
+      next.set(p.id, key);
+      if (seen?.get(p.id) !== key) players.push(rec);
+    }
+    const gone = [...(seen?.keys() ?? [])].filter((id) => !this.players.has(id));
+    return { frame: this.frame, winner: this.winner, players, gone, keys: next };
+  }
 }
 
 export class RoomManager {

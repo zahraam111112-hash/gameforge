@@ -28,6 +28,7 @@ function oneBot(n, stats) {
       const level = SPREAD ? `arena${Math.floor(n / ROOM_SIZE)}` : 'arena';
       ws.send(JSON.stringify({ t: 'join', mode: n % ROYALE_EVERY === 0 ? 'royale' : 'coop', level, name: `bot${n}` }));
     });
+    const peers = new Map();
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw.toString()); } catch { return; }
@@ -35,20 +36,24 @@ function oneBot(n, stats) {
       if (m.t === 'welcome' && m.id) id = m.id;
       if (m.t === 'state') {
         frames++;
-        const me = m.players?.find((p) => p.id === id);
-        if (me) sawSelf = true;
-        if (frames % 6 === 0 && ws.readyState === 1) {
-          const dir = Math.sin(n + frames / 20) > 0;
-          ws.send(JSON.stringify({
-            t: 'in', left: !dir, right: dir, jump: frames % 30 < 3,
-            attack: frames % 45 < 2, dash: frames % 90 < 2, down: false,
-          }));
+        // Deltas: merge what changed, drop who left.
+        for (const p of m.players ?? []) peers.set(p.id, p);
+        for (const pid of m.gone ?? []) peers.delete(pid);
+        if (peers.has(id)) sawSelf = true;
+        if (frames === 1 || frames % 6 === 0) {
+          if (ws.readyState === 1) {
+            const dir = Math.sin(n + frames / 20) > 0;
+            ws.send(JSON.stringify({
+              t: 'in', left: !dir, right: dir, jump: frames % 30 < 3,
+              attack: frames % 45 < 2, dash: frames % 90 < 2, down: false,
+            }));
+          }
         }
         if (frames === 60) {
           clearTimeout(t);
-          stats.maxPlayers = Math.max(stats.maxPlayers, m.players.length);
+          stats.maxPlayers = Math.max(stats.maxPlayers, peers.size);
           stats.winners += m.winner ? 1 : 0;
-          resolve({ ok: sawSelf, id, frames, players: m.players.length, royale: n % ROYALE_EVERY === 0 });
+          resolve({ ok: sawSelf, id, frames, players: peers.size, royale: n % ROYALE_EVERY === 0 });
         }
       }
     });
