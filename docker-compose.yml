@@ -21,9 +21,8 @@ services:
     networks: [gameforge_net]
     deploy:
       resources:
-        limits: { cpus: "1.00", memory: 1024M }
+        limits: { cpus: "1.00", memory: 1024M, pids: 256 }
         reservations: { cpus: "0.25", memory: 256M }
-    pids_limit: 256
     security_opt: ["no-new-privileges:true"]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -58,9 +57,8 @@ services:
     networks: [gameforge_net]
     deploy:
       resources:
-        limits: { cpus: "2.00", memory: 2048M }
+        limits: { cpus: "2.00", memory: 2048M, pids: 512 }
         reservations: { cpus: "0.50", memory: 512M }
-    pids_limit: 512
     security_opt: ["no-new-privileges:true"]
 
 networks:
