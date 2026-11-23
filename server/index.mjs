@@ -122,7 +122,11 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ t: 'error', error: 'room_full' }));
         ws.room = null; return;
       }
+      // Acknowledge with state immediately: with a few hundred clients joining at
+      // once, waiting up to a tick for the broadcast is long enough that a slow
+      // client can be dropped before it ever sees itself in a room it joined.
       ws.send(JSON.stringify({ t: 'welcome', id, name: id, room: kind }));
+      ws.send(JSON.stringify(ws.room.snapshot()));
     } else if (msg.t === 'name' && ws.room) {
       const pl = ws.room.players.get(id);
       if (pl) pl.name = String(msg.name).slice(0, 16);
