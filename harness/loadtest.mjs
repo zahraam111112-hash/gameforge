@@ -64,12 +64,9 @@ function oneBot(n, stats) {
 
 const stats = { maxPlayers: 0, winners: 0 };
 const started = Date.now();
-// Join in waves so the handshake stays honest but the room really does fill.
-const results = [];
-for (let i = 0; i < PLAYERS; i += 50) {
-  const wave = await Promise.all(Array.from({ length: Math.min(50, PLAYERS - i) }, (_, k) => oneBot(i + k, stats)));
-  results.push(...wave);
-}
+// All at once. Staggering in waves kept only the wave size live at any moment,
+// so a "200 player" test was really a 50-player test repeated four times.
+const results = await Promise.all(Array.from({ length: PLAYERS }, (_, i) => oneBot(i, stats)));
 
 const ok = results.filter((r) => r.ok).length;
 const errors = results.filter((r) => !r.ok);
