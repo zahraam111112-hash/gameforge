@@ -1,12 +1,12 @@
 {
-  "version": "0.1.1",
-  "builds": 2,
-  "updatedAt": "2026-11-23T22:12:01.932Z",
+  "version": "0.1.2",
+  "builds": 3,
+  "updatedAt": "2026-11-23T23:32:05.530Z",
   "tests": {
-    "total": 0,
-    "passed": 0
+    "total": 12,
+    "passed": 12
   },
-  "theme": "Unblock the Run",
+  "theme": "Ship the promised run: checkpoints, forgiving pits, winnable stages, testable arena",
   "round": 1,
   "roadmap": [
     "Complete story act one with a three-phase boss",

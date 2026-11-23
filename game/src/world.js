@@ -24,6 +24,15 @@ export const ENEMY_TYPES = {
 /** Fallback bounty for anything that dies without a known ENEMY_TYPES entry. */
 export const DEFAULT_ENEMY_SCORE = 10;
 
+/** How many one-shot events the engine will hold before dropping the oldest.
+ *  Consumers (main.js) drain every fixed step, so this is only reached by
+ *  headless runs — server rooms and the bot sim never listen to audio. The cap
+ *  is what keeps a 3600-step simulation at constant memory. */
+export const MAX_EVENTS = 64;
+
+/** A shared, immutable empty result so draining an idle world allocates nothing. */
+const NO_EVENTS = Object.freeze([]);
+
 /** Kill bounty for an enemy type — the single source of truth for scoring.
  *  Used by the engine when HP hits 0, so browser and headless play agree. */
 export function enemyScore(type, fallback = DEFAULT_ENEMY_SCORE) {
@@ -44,6 +53,12 @@ export class World {
     this.spawnPoint = parsed.player;
     this.entities = [];
     this.frame = 0;
+    // One-shot gameplay events, pushed by the engine action that actually
+    // happened (a jump that left the ground, a dash that started, a strike that
+    // swung) instead of being guessed from input by the presentation layer.
+    // main.js drains this after every fixed step and turns each entry into
+    // exactly one sound; headless runs simply never drain it (see MAX_EVENTS).
+    this.events = [];
     this.status = 'playing'; // playing | won | lost
     this.keys = 0;
     for (const s of parsed.spawns) this._spawn(s);
