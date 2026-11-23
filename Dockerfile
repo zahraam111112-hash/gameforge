@@ -11,6 +11,12 @@ WORKDIR /app
 
 # Dependency layer first. node_modules itself is a named volume (see compose),
 # so the image seeds it and the harness gets its own copy per container.
+# Playwright's postinstall pulls a ~150MB Chromium that no gate needs — the
+# harness verifies with the headless bot simulation and the vite build. Without
+# this the install hangs for many minutes and the image balloons.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    PLAYWRIGHT_SKIP_BROWSER_GC=1
+
 COPY package.json package-lock.json ./
 COPY game/package.json game/
 COPY server/package.json server/

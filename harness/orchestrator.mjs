@@ -123,6 +123,7 @@ async function main() {
       // Builds land in game/.stage; only a verified build is promoted.
       const stage = path.join(ROOT, 'game', '.stage');
       const latest = path.join(PUBLISHED, 'latest');
+      fs.mkdirSync(latest, { recursive: true });
       if (fs.existsSync(stage)) {
         for (const name of fs.readdirSync(stage)) {
           const from = path.join(stage, name);
