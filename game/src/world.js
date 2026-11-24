@@ -131,9 +131,10 @@ export class World {
     // Arena bookkeeping. Story stages finish on their 'L' exit or their boss;
     // the arena finishes when every seeded wave has been cleared.
     // `wave` counts waves *spawned* so far, `wavesDone` counts waves actually
-    // cleared. They live as plain numbers: the old instance field was called
-    // wavesCleared and shadowed a prototype method of the same name, so the
-    // first arena exit touch called a number and threw. One name, one meaning.
+    // cleared. They live as plain numbers only: a counter and a query must
+    // never share a name, because a number on `this` hides a prototype method
+    // of the same name and the first exit touch would call it and throw.
+    // The query is hasClearedWaves(), which reads these two numbers.
     this.wave = 0;
     this.wavesTotal = 0;
     this.wavesDone = 0;
@@ -206,40 +207,55 @@ export class World {
   }
 
   /** True when the battle scope the exit is gated on is satisfied: no boss is
-   *  alive and, in the arena, every seeded wave has been cleared and spawned. */
-  wavesCleared() {
+   *  alive and, in the arena, every seeded wave has been cleared and spawned.
+   *  Reads only the plain counters (wavesDone/wave), so there is exactly one
+   *  meaning for "cleared" and no number can ever shadow this query. */
+  hasClearedWaves() {
     return this.wavesTotal > 0
-      && this.wavesCleared >= this.wavesTotal
+      && this.wavesDone >= this.wavesTotal
       && this.wave === this.wavesTotal;
   }
 
   exitUnlocked() {
     if (this.countAlive('boss') > 0) return false;
-    if (this.levelId === 'arena') return this.wavesCleared();
+    if (this.levelId === 'arena') return this.hasClearedWaves();
     return true;
   }
 
-  /** Advance the arena schedule. Runs once per fixed step, before the players,
-   *  so the world state a client receives is the same for every player. */
+  /** Advance the arena schedule. Called once per fixed step from tick() and
+   *  tickPlayerOnly(), between stepPlayer and updateEnemies, so the world state
+   *  a client receives is the same for every player in solo and in a room. */
   _updateWaves() {
     if (this.levelId !== 'arena' || this.wavesTotal === 0) return;
-    // Once every seeded wave has been pulled in there is nothing left to spawn,
-    // ever: the gate below means a surge can never bring a third wave in.
-    if (this.wave >= this.wavesTotal) return;
-    this.waveTimer++;
     const alive = this.countAlive('enemy') + this.countAlive('boss');
+    // Once every seeded wave has been pulled in there is nothing left to spawn,
+    // ever: this branch can only ever record the clear, never bring a third
+    // wave in. `wavesDone` is written as a plain number and nothing else — the
+    // query lives on the prototype as hasClearedWaves(), so a counter can no
+    // longer shadow a method (that was the old arena-exit crash).
+    if (this.wave >= this.wavesTotal) {
+      if (alive === 0) this.wavesDone = this.wave;
+      return;
+    }
+    this.waveTimer++;
     const spawnNow = this.wave === 0
       ? true                         // frame 0: the arena is never empty
       : alive === 0 || this.waveTimer >= ARENA_WAVE_TIMEOUT;
     if (!spawnNow) return;
-    if (this.wave > 0) this.wavesCleared = this.wave; // the previous wave is down
+    // The previous wave is genuinely down (a timeout-forced surge does not
+    // count as a clear, but the wave>=wavesTotal branch above still records
+    // the clear once the live room is empty).
+    if (this.wave > 0 && alive === 0) this.wavesDone = this.wave;
     const wanted = this.waveSpawns[this.wave] ?? 0;
     // The cap is per-world, not per-wave: rooms of hundreds of players share it.
     const n = clamp(wanted, 0, Math.max(0, ARENA_MAX_ENEMIES - alive));
     this.spawnDirectionalSurge(n);
     this.wave++;
     this.waveTimer = 0;
-    if (this.wave >= this.wavesTotal && alive === 0) this.wavesCleared = this.wavesTotal;
+    // The last wave can be over on the same frame it arrives when the cap
+    // refused to spawn anything; count after the spawn, never on stale data.
+    if (this.wave >= this.wavesTotal
+      && this.countAlive('enemy') + this.countAlive('boss') === 0) this.wavesDone = this.wave;
   }
 
   /** Spawn `n` enemies from both sides of the stage, sweeping inward. The paths
@@ -519,9 +535,13 @@ export class World {
    *  from here, so 'lost' can only ever be decided in one place. */
   _fallOut(p) {
     p.vx = 0; p.vy = 0;
+    // ignoreInvuln + fell: a mid-dash fall (dashes grant i-frames) must still
+    // cost PIT_DAMAGE, and the hit is billed as a fall, not as contact.
     const hit = this.hurtPlayer(p, PIT_DAMAGE, null, 'pit', { ignoreInvuln: true, fell: true });
-    // Dead, or the world already ended this frame (a boss win, say): no respawn.
-    if (p.hp <= 0 || this.status !== 'playing') return false;
+    // A fall that survived is always a respawn; one that emptied the bar ends
+    // the run through hurtPlayer's died flag, so a mistake is never a silent
+    // free life. The world can also have ended this frame (a boss win, say).
+    if (!hit.applied || hit.died || this.status !== 'playing') return false;
     // The authored pole wins over the spawn tile: that is the whole point of
     // the 'C' tiles in level.js, and p.checkpoint is set by crossing one.
     const at = p.checkpoint || this.spawnPoint;
@@ -535,7 +555,7 @@ export class World {
     p.invuln = RESPAWN_INVULN;
     this.emit('respawn', {
       id: p.id ?? 'player', x: Math.round(p.x), y: Math.round(p.y),
-      hp: p.hp, cause: 'pit', checkpoint: Boolean(p.checkpoint), applied: hit,
+      hp: p.hp, cause: 'pit', checkpoint: Boolean(p.checkpoint), applied: hit.applied,
     });
     return true;
   }
@@ -550,11 +570,17 @@ export class World {
     this.emit('exitLocked', { boss: this.countAlive('boss'), wave: this.wave, wavesTotal: this.wavesTotal });
   }
 
+  /** The one place enemy health changes. The boss takes BOSS_DAMAGE_MULT per
+   *  hit and its own i-frame window, and — unlike before — that window applies
+   *  to the boss too: without it, two overlapping co-op attackers could chip a
+   *  boss every frame and skip the whole escalation. Non-boss enemies behave
+   *  exactly as they did (multiplier 1, 8 frame i-frames). */
   damageEnemy(e, amount, knockDir = 0, attacker = null, opts = {}) {
-    if (e.hurtT > 0 && !e.boss) return false;
+    if (e.hurtT > 0) return false;
     const fell = Boolean(opts.fell);
-    e.hp -= amount;
-    e.hurtT = 8;
+    const mult = e.boss ? BOSS_DAMAGE_MULT : 1;
+    e.hp -= amount * mult;
+    e.hurtT = e.boss ? BOSS_HURT_FRAMES : 8;
     if (knockDir) e.vx = knockDir * 2.2;
     // Bounty is awarded here, in the engine, so a headless run and a browser
     // run score identically — the renderer only adds the visual feedback.
@@ -586,8 +612,19 @@ export class World {
     return false;
   }
 
-  hurtPlayer(p, amount, fromX, cause = 'contact') {
-    if (p.invuln > 0) return;
+  /** The one place player health changes. Returns {applied, hp, died} so a
+   *  caller can branch on what actually happened instead of re-reading hp:
+   *  a hit absorbed by i-frames returns applied:false and emits nothing.
+   *
+   *  opts.ignoreInvuln is the pit's escape hatch: dashes grant i-frames, and a
+   *  fall taken mid-dash must still cost PIT_DAMAGE (the old early-return lost
+   *  the HP and could end the run ambiguously). opts.fell marks the cause as a
+   *  fall for the event stream. */
+  hurtPlayer(p, amount, fromX, cause = 'contact', opts = {}) {
+    const ignoreInvuln = Boolean(opts.ignoreInvuln);
+    if (!ignoreInvuln && p.invuln > 0) {
+      return { applied: false, hp: p.hp, died: p.hp <= 0 };
+    }
     p.hp -= amount;
     p.invuln = 48;
     if (fromX != null) {
@@ -597,7 +634,13 @@ export class World {
     // The player's own life is clamped at 0 so an overkill of 999 from a pit
     // does not leave a nonsense hp value in the HUD or the snapshots.
     if (p.hp < 0) p.hp = 0;
-    this.emit('hurt', { id: p.id ?? 'player', hp: p.hp, amount, cause });
+    const died = p.hp <= 0;
+    this.emit('hurt', {
+      id: p.id ?? 'player', hp: p.hp, amount, cause,
+      fell: Boolean(opts.fell),
+      fromX: fromX == null ? null : Math.round(fromX),
+    });
+    return { applied: true, hp: p.hp, died };
   }
 
   /** Multiplayer variant: full physics + combat for one player, no world status
@@ -606,6 +649,11 @@ export class World {
     this.frame++;
     const wasDead = p.dead;
     this.stepPlayer(p, input);
+    // Wave schedule before updateEnemies, so a surge spawned this frame gets
+    // its first physics step on the same frame and the room and the solo client
+    // see identical world state. The guard keeps story stages free of the call:
+    // only a level with seeded wave data has anything to schedule.
+    if (this.wavesTotal > 0) this._updateWaves();
     if (p.hp <= 0 && !wasDead) { p.dead = true; p.respawnT = 90; }
     this.updateEnemies();
   }
@@ -614,6 +662,9 @@ export class World {
     if (this.status !== 'playing') return;
     this.frame++;
     this.stepPlayer(p, input);
+    // Same position as tickPlayerOnly(): the arena fills in solo play and in a
+    // shared room through one code path, and a story stage never pays for it.
+    if (this.wavesTotal > 0) this._updateWaves();
     this.updateEnemies();
   }
 

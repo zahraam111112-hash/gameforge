@@ -1,4 +1,4 @@
-import { World, makePlayer, ENEMY_TYPES } from './world.js';
+import { World, makePlayer } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';
@@ -27,6 +27,33 @@ let player = null;
 let storyIndex = 0;
 let paused = false;
 let lastResult = null;
+// The won/lost transition must fire exactly once per run. Without this guard the
+// render loop re-entered the 'won' branch on every frame of the 900ms outro and
+// queued one startStory(storyIndex + 1) per frame, so a single stage clear
+// fast-forwarded through the whole story.
+let resultHandled = false;
+
+/* ── Deterministic run seeds ────────────────────────────────────────────────
+ * Every fresh run takes the next value of this module-level counter. The seed
+ * used to be `Date.now() & 0xffff`, which made browser play unreproducible: the
+ * same stage played differently on every load, no run could be replayed, and a
+ * browser run could never be lined up against harness/sim.mjs (which seeds
+ * explicitly) or against a server room. A counter is deterministic per page
+ * load, still differs run to run, and every world is still built by the engine
+ * as World(level, seed) — the same contract the sims and the rooms use.
+ *
+ * Nothing in the game reads the wall clock any more: the first run of a page
+ * load always gets DEFAULT_RUN_SEED, and every later start (a story retry, the
+ * next stage, an endless run) takes the next value of the counter. That is what
+ * makes "play it again, same seed" a thing a player — or a bug report — can do.
+ * The value stays inside 32 bits so it can be shared with a room or a URL. */
+const DEFAULT_RUN_SEED = 0x4e4152; // 'NAR'
+let runSeed = DEFAULT_RUN_SEED;
+const nextSeed = () => {
+  const seed = runSeed;
+  runSeed = (runSeed + 1) >>> 0;
+  return seed;
+};
 
 const params = new URLSearchParams(location.search);
 if (params.get('autoplay') === '1') startStory(0);
@@ -53,7 +80,7 @@ function showMenu() {
 function startStory(index) {
   storyIndex = index;
   const id = STORY_ORDER[index] ?? STORY_ORDER[0];
-  world = new World(id, Date.now() & 0xffff);
+  world = new World(id, nextSeed());
   player = makePlayer(world.spawnPoint.x, world.spawnPoint.y);
   mode = 'story';
   paused = false;
@@ -67,14 +94,20 @@ function startStory(index) {
 }
 
 function startEndless() {
-  world = new World('arena', Date.now() & 0xffff);
+  // The arena spawns its waves itself: World('arena', seed) seeds a deterministic
+  // schedule and _updateWaves() pulls each surge in through _makeEnemy and the
+  // seeded stream. There used to be a raw spawnSurge(6) here that pushed six
+  // Date.now/Math.random enemies straight onto world.entities — they had no id,
+  // no boss/fell/phase/wallDir flags, and the clear check could not count them,
+  // so the gate stayed locked forever on top of the double spawn. One spawn path
+  // now, and the arena can be finished again.
+  world = new World('arena', nextSeed());
   player = makePlayer(world.spawnPoint.x, world.spawnPoint.y);
   mode = 'endless';
   paused = false;
   lastResult = null;
   hideMenu();
   audio.startMusic('arena');
-  spawnSurge(6);
 }
 
 function startOnline(kind) {
@@ -174,22 +207,6 @@ function updateHud() {
   hud.energy.style.width = `${Math.max(0, player.energy)}%`;
   hud.score.textContent = String(player.score);
   if (!net.connected) hud.net.textContent = 'offline';
-}
-
-function spawnSurge(n) {
-  const types = ['enemy1', 'enemy1', 'enemy2', 'enemy3'];
-  for (let i = 0; i < n; i++) {
-    const type = types[Math.floor(Math.random() * types.length)];
-    // Stats come from the shared table so a surge enemy is the same creature
-    // the story levels use — HP, damage and bounty all agree.
-    const t = ENEMY_TYPES[type];
-    world.entities.push({
-      type, kind: 'enemy', x: Math.random() * (world.width - 40) + 20, y: 32,
-      w: t.w, h: t.h, vx: (Math.random() < 0.5 ? -1 : 1) * t.speed, vy: 0,
-      hp: t.hp, maxHp: t.hp, dmg: t.dmg, score: t.score,
-      onGround: false, hurtT: 0, dead: false, jumpChance: t.jump,
-    });
-  }
 }
 
 document.addEventListener('keydown', (e) => {
