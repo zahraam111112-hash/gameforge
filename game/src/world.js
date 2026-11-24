@@ -256,40 +256,40 @@ export class World {
     return this.oneway[ty][tx];
   }
 
-  /** Axis-separated tile collision. `ignoreOneway` lets entities drop through platforms. */
+  /** Axis-separated tile collision. `ignoreOneway` lets entities drop through platforms.
+   *  The tile range is walked in place: this runs for every player and enemy on
+   *  every tick, and building an array of {tx,ty} objects per axis was the whole
+   *  cost of a 100-player room (2ms per player per tick, against a 33ms budget). */
   moveEntity(e, ignoreOneway = false) {
     let hitX = false;
     let hitY = false;
+    const w = e.w, h = e.h;
     e.x += e.vx;
-    let t = this._tiles(e);
-    for (const { tx, ty } of t) {
-      if (this.solidAt(tx, ty)) {
-        if (e.vx > 0) e.x = tx * TILE - e.w;
+    let x0 = Math.floor(e.x / TILE), x1 = Math.floor((e.x + w - 0.01) / TILE);
+    let y0 = Math.floor(e.y / TILE), y1 = Math.floor((e.y + h - 0.01) / TILE);
+    for (let ty = y0; ty <= y1 && !hitX; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        if (!this.solidAt(tx, ty)) continue;
+        if (e.vx > 0) e.x = tx * TILE - w;
         else if (e.vx < 0) e.x = (tx + 1) * TILE;
         e.vx = 0; hitX = true; break;
       }
     }
     e.y += e.vy;
     e.onGround = false;
-    t = this._tiles(e);
-    for (const { tx, ty } of t) {
-      const solid = this.solidAt(tx, ty);
-      const platform = !ignoreOneway && this.onewayAt(tx, ty) && e.vy > 0 && (e.y + e.h - e.vy) <= ty * TILE + 1;
-      if (solid || platform) {
-        if (e.vy > 0) { e.y = ty * TILE - e.h; e.onGround = true; }
+    x0 = Math.floor(e.x / TILE); x1 = Math.floor((e.x + w - 0.01) / TILE);
+    y0 = Math.floor(e.y / TILE); y1 = Math.floor((e.y + h - 0.01) / TILE);
+    for (let ty = y0; ty <= y1 && !hitY; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        const solid = this.solidAt(tx, ty);
+        const platform = !ignoreOneway && this.onewayAt(tx, ty) && e.vy > 0 && (e.y + h - e.vy) <= ty * TILE + 1;
+        if (!solid && !platform) continue;
+        if (e.vy > 0) { e.y = ty * TILE - h; e.onGround = true; }
         else if (e.vy < 0 && solid) { e.y = (ty + 1) * TILE; }
         e.vy = 0; hitY = true; break;
       }
     }
     return { hitX, hitY };
-  }
-
-  _tiles(e) {
-    const x0 = Math.floor(e.x / TILE), x1 = Math.floor((e.x + e.w - 0.01) / TILE);
-    const y0 = Math.floor(e.y / TILE), y1 = Math.floor((e.y + e.h - 0.01) / TILE);
-    const out = [];
-    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) out.push({ tx, ty });
-    return out;
   }
 
   groundAhead(tx, ty) {
