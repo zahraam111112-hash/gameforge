@@ -1,6 +1,15 @@
 node_modules/
 *.log
 devlog/activity.jsonl
+# Health samples accumulate one line every five minutes; they are a local
+# instrument reading, not source. Keeping them out means `git add -A` in the
+# harness never commits a measurement as if it were a change.
+devlog/public-health.jsonl
+# Screenshots taken from this machine to check a fix by eye. Evidence for a
+# conversation, not part of the product; the ones worth publishing go in docs/.
+local-*.png
+public-*.png
+tools/scratch/
 .DS_Store
 harness/.state/
 game/.stage/

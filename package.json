@@ -15,6 +15,9 @@
     "start": "node server/index.mjs",
     "test": "node --test test/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "soak": "node harness/soak.mjs",
+    "tickrate": "node harness/tickrate.mjs",
+    "health": "node harness/public-health.mjs",
     "verify": "npm run build && npm test && npm run smoke"
   },
   "engines": {
