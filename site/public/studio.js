@@ -88,6 +88,9 @@
   }
 
   function addRow(ev) {
+    // The placeholder is markup, not history: the first real event replaces it.
+    // Left in place it sat above a hundred live rows saying nothing had happened.
+    stream.querySelector('.empty')?.remove();
     const line = lineFor(ev);
     const li = document.createElement('li');
     li.className = 'ev';
@@ -176,12 +179,20 @@
   const KW_JS = new Set('const let var function return if else for while class new import export from async await try catch finally throw typeof instanceof of in null undefined true false this super switch case break continue default delete do static get set yield'.split(' '));
   const KW_PY = new Set('def class return if elif else for while import from as with try except finally pass lambda and or not in is None True False async await yield raise global'.split(' '));
 
+  // A grep hit inside a built bundle is ONE line of ~6 KB. Rendered whole it pushes
+  // every real line out of the window, so each line is capped and the elision is
+  // stated instead of pretending the line ended there.
+  const MAX_COL = 200;
+
   function highlight(src, lang) {
     const kw = lang === 'py' ? KW_PY : KW_JS;
-    const lines = String(src).split('\n').slice(0, 400);
+    const all = String(src).split('\n');
+    const lines = all.slice(0, 400);
     let out = '';
     const re = /(["'`])(?:\\.|(?!\1).)*\1|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b/g;
-    lines.forEach((raw, i) => {
+    lines.forEach((raw0, i) => {
+      const over = raw0.length > MAX_COL;
+      const raw = over ? raw0.slice(0, MAX_COL) : raw0;
       let rest = raw;
       const cIdx = lang === 'py' ? rest.indexOf('#') : rest.indexOf('//');
       let comment = '';
@@ -209,8 +220,12 @@
       }
       let body = parts.join('') + esc(rest.slice(last));
       if (comment) body += `<span class="t-c">${esc(comment)}</span>`;
+      if (over) body += `<span class="t-c"> … +${raw0.length - MAX_COL} chars on this line</span>`;
       out += `<div class="row"><span class="n">${i + 1}</span><span class="s">${body || ' '}</span></div>`;
     });
+    if (all.length > lines.length) {
+      out += `<div class="row"><span class="n">…</span><span class="s t-c">${all.length - lines.length} more lines not shown</span></div>`;
+    }
     return out;
   }
 
