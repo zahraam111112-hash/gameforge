@@ -36,6 +36,24 @@ function readJsonBody(req, limit = 256 * 1024) {
   });
 }
 
+/** A round in flight: the newest round event is a start, not an outcome.
+ *  Deliberately not "did anything get written recently" — an agent thinking
+ *  through a model call writes nothing for minutes and is still working.
+ *  Read from the whole file, not from a poll's chunk, so a delta request that
+ *  contains no round event still reports the studio as busy. */
+function isHarnessActive(buf) {
+  const lines = buf.toString('utf8').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"kind":"round"')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.kind !== 'round') continue;
+    return e.phase === 'start' && Date.now() - Date.parse(e.at) < 6 * 3600_000;
+  }
+  return false;
+}
+
 function safeJoin(base, urlPath) {
   const p = path.normalize(path.join(base, urlPath));
   if (!p.startsWith(base + path.sep) && p !== base) return null;
@@ -62,6 +80,24 @@ const server = http.createServer(async (req, res) => {
   if (p === '/healthz' || p === '/api/health') {
     return send(res, 200, JSON.stringify({ ok: true, uptime: process.uptime(), ...rooms.stats() }));
   }
+  // Every archived build on disk, not just the ones the devlog mentions: a build
+  // that shipped before the devlog existed is still playable and must stay in the
+  // version picker. Read from the filesystem so this cannot drift from reality.
+  if (p === '/api/builds') {
+    const dir = path.join(PUBLIC, 'game');
+    return fs.readdir(dir, { withFileTypes: true }, (err, ents) => {
+      if (err) return send(res, 200, JSON.stringify({ builds: [] }));
+      const builds = ents
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => {
+          const statue = fs.statSync(path.join(dir, d.name));
+          return { version: d.name, at: statue.mtime.toISOString(), playable: fs.existsSync(path.join(dir, d.name, 'index.html')) };
+        })
+        .filter((b) => b.playable)
+        .sort((a, b) => (a.version === 'latest' ? 1 : b.version === 'latest' ? -1 : b.version.localeCompare(a.version, undefined, { numeric: true })));
+      send(res, 200, JSON.stringify({ builds }));
+    });
+  }
   if (p === '/api/lobby') {
     return send(res, 200, JSON.stringify(rooms.stats()));
   }
@@ -74,14 +110,56 @@ const server = http.createServer(async (req, res) => {
     const f = path.join(ROOT, 'devlog', 'log.jsonl');
     fs.readFile(f, 'utf8', (err, data) => {
       if (err) return send(res, 200, '[]');
-      const lines = data.trim().split('\n').slice(-500);
-      send(res, 200, `[${lines.join(',')}]`);
+      // Parse each line rather than joining raw text: one torn line at the end of
+      // an append-only file used to make the whole endpoint invalid JSON, which
+      // blanked the public devlog with no error anywhere.
+      const entries = [];
+      for (const line of data.trim().split('\n').slice(-500)) {
+        try { entries.push(JSON.parse(line)); } catch { /* torn tail */ }
+      }
+      send(res, 200, JSON.stringify(entries));
     });
     return;
   }
   if (p === '/api/version') {
     const f = path.join(ROOT, 'version.json');
     return fs.readFile(f, 'utf8', (err, data) => send(res, 200, err ? '{"version":"dev"}' : data));
+  }
+
+  // The studio's live work stream. `from` is a byte offset the client got back
+  // from its previous call: an append-only file can be tailed exactly, so an
+  // audience watching a round sees each step once instead of re-reading 4000
+  // lines every two seconds. No offset means "the last N events" for a fresh
+  // page load.
+  if (p === '/api/activity') {
+    const f = path.join(ROOT, 'devlog', 'activity.jsonl');
+    const from = url.searchParams.get('from');
+    const limit = Math.min(400, Math.max(1, Number(url.searchParams.get('limit') ?? 120)));
+    fs.readFile(f, (err, buf) => {
+      if (err) return send(res, 200, JSON.stringify({ cursor: 0, events: [], active: false }));
+      const size = buf.length;
+      let start = 0;
+      if (from != null && Number.isFinite(Number(from))) {
+        start = Math.min(size, Math.max(0, Number(from)));
+        // A truncated file (or a stale cursor after rotation) must not strand the
+        // reader mid-line: an offset past the end falls back to the tail.
+        if (start > 0 && buf[start - 1] !== 0x0a) start = size;
+      }
+      const chunk = buf.subarray(start, size).toString('utf8');
+      const lines = chunk.split('\n').filter(Boolean);
+      const picked = from == null ? lines.slice(-limit) : lines.slice(0, limit);
+      const events = [];
+      for (const line of picked) {
+        try { events.push(JSON.parse(line)); } catch { /* a half-written tail line */ }
+      }
+      // The cursor is where this response stopped reading, so the next call gets
+      // exactly what came after it. When the limit cut the chunk short, resume
+      // after the last line actually returned rather than skipping the remainder.
+      const cut = from != null && picked.length < lines.length;
+      const cursor = cut ? start + Buffer.byteLength(picked.join('\n') + '\n', 'utf8') : size;
+      send(res, 200, JSON.stringify({ cursor, read: start, events, active: isHarnessActive(buf) }));
+    });
+    return;
   }
 
   if (p === '/' || p === '') return fileRes(res, path.join(PUBLIC, 'index.html'));

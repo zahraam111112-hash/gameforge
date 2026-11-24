@@ -22,29 +22,36 @@ async function loadVersion() {
 }
 
 async function loadVersions() {
-  const data = await json('/api/devlog', []);
-  const builds = [];
+  // The picker is built from what is actually on disk, so every archived build
+  // is reachable even if it predates the devlog entry that described it.
+  const [{ builds }, data] = await Promise.all([json('/api/builds', { builds: [] }), json('/api/devlog', [])]);
+  const byVersion = new Map(data.filter((e) => e.kind === 'release' || e.kind === 'build').map((e) => [e.version, e]));
   const sel = $('#version-select');
-  for (const e of data) {
-    if (e.kind !== 'release' && e.kind !== 'build') continue;
+  sel.innerHTML = '';
+  for (const b of builds) {
     const opt = document.createElement('option');
-    opt.value = e.version ?? 'latest';
-    opt.textContent = `${e.version ?? 'build'} · ${fmtDate(e.at)}`;
+    opt.value = b.version;
+    const rel = byVersion.get(b.version);
+    opt.textContent = b.version === 'latest' ? 'latest' : `${b.version} · ${fmtDate(rel?.at ?? b.at)}`;
     sel.appendChild(opt);
-    builds.push(e);
   }
   const list = $('#version-list');
   if (!builds.length) {
     list.innerHTML = '<p class="sub">No archived builds yet — the first stable release will appear here.</p>';
     return;
   }
-  list.innerHTML = builds.slice().reverse().map((b) => `
+  list.innerHTML = builds.map((b) => {
+    const rel = byVersion.get(b.version);
+    const href = `/game/${encodeURIComponent(b.version)}/index.html`;
+    return `
     <article class="card">
-      <span class="tag">${b.version ?? 'build'}</span>
-      <h3>${escapeHtml(b.title ?? 'Release')}</h3>
-      <div class="date">${fmtDate(b.at)}</div>
-      ${b.changes ? `<ul>${b.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
-    </article>`).join('');
+      <span class="tag">${escapeHtml(b.version)}</span>
+      <h3><a href="${href}" target="_blank" rel="noopener">${escapeHtml(rel?.title ?? `Build ${b.version}`)}</a></h3>
+      <div class="date">${fmtDate(rel?.at ?? b.at)}</div>
+      ${rel?.changes ? `<ul>${rel.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
+      <p class="card-play"><a href="${href}" target="_blank" rel="noopener">Play this build ↗</a></p>
+    </article>`;
+  }).join('');
 }
 
 function escapeHtml(s) {

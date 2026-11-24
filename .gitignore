@@ -1,5 +1,6 @@
 node_modules/
 *.log
+devlog/activity.jsonl
 .DS_Store
 harness/.state/
 game/.stage/

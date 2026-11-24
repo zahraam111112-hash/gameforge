@@ -7,11 +7,13 @@
   <meta name="description" content="A 2D platformer that a fleet of AI agents builds, tests and improves continuously — in public." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="/site.css" />
+  <link rel="stylesheet" href="/studio.css" />
 </head>
 <body>
   <header class="top">
     <a class="brand" href="/">GAME<span>FORGE</span></a>
     <nav>
+      <a href="#studio">Live studio</a>
       <a href="#play">Play</a>
       <a href="#versions">Versions</a>
       <a href="#devlog">Devlog</a>
@@ -47,6 +49,41 @@
       </div>
     </section>
 
+    <section id="studio" class="panel">
+      <div class="studio-head">
+        <div>
+          <h2>Live studio</h2>
+          <p class="sub" style="margin-bottom:0">The harness working, in real time: every file it opens, every command it
+            runs, the code it writes, the gates it must pass. Nothing here is a summary written after the fact.</p>
+        </div>
+        <span id="live-badge" class="live-badge"><i></i><span id="live-label">connecting…</span></span>
+      </div>
+
+      <div class="studio" style="margin-top:18px">
+        <div>
+          <div class="now">
+            <div class="eyebrow2">Right now</div>
+            <div class="what" id="now-what">waiting for the studio to write its first step…</div>
+            <div class="who" id="now-who"></div>
+          </div>
+          <ol id="stream" class="stream"><li class="empty">The work stream fills as the next round starts.</li></ol>
+          <div class="gates" id="gates"></div>
+        </div>
+        <div>
+          <div class="codewin">
+            <div class="codebar">
+              <span id="code-title">—</span>
+              <button id="code-pin" class="mini" type="button">pin latest</button>
+            </div>
+            <pre id="code" class="code"></pre>
+          </div>
+          <div class="phases" id="phases"></div>
+        </div>
+      </div>
+
+      <div class="critic" id="critic"></div>
+    </section>
+
     <section id="play" class="panel">
       <h2>Play</h2>
       <p class="sub">Story · Endless · Online co-op · Battle royale. Keyboard: <kbd>A</kbd><kbd>D</kbd> move,
@@ -80,23 +117,25 @@
       <div class="how-grid">
         <article>
           <h3>1 · Observe</h3>
-          <p>A critic pass plays the current build with scripted bots, collects frame data, deaths, stuck points,
-            session length, then reads the devlog and the open issues.</p>
+          <p>Four bot simulations (s1, s2, s3, arena) play the current build for 5400 ticks each and report
+            progress, deaths, time stuck and any NaN. A critic agent then reads the frame data, the source and
+            the devlog, and lists what is broken at which severity.</p>
         </article>
         <article>
-          <h3>2 · Decide</h3>
-          <p>A planner turns observations into a small, ranked set of improvements with an explicit rationale —
-            story, graphics, gameplay, audio, netcode.</p>
+          <h3>2 · Direct</h3>
+          <p>A director turns that critique into at most four tasks for this round with an explicit rationale —
+            and the rationale is published whether or not the round ships.</p>
         </article>
         <article>
           <h3>3 · Build</h3>
-          <p>Several builders work in parallel in isolated worktrees. Every change must compile and pass the
-            unit + bot simulation suite before it can merge.</p>
+          <p>One builder agent per task, in sequence, in the same workspace, with a tool whitelist (read, edit,
+            run, simulate) and no access to secrets. Each step is on the work stream above as it happens.</p>
         </article>
         <article>
-          <h3>4 · Verify &amp; ship</h3>
-          <p>A verifier replays seeds in a real headless browser, checks the visuals, and only then tags a
-            stable version, archives it and updates this site.</p>
+          <h3>4 · Gate &amp; ship</h3>
+          <p>Three deterministic gates — the unit suite, the verify script, the production build — decide whether
+            the round ships. Fail any of them and the round is held back, the working tree is reverted, and the
+            reason is published instead of a version number.</p>
         </article>
       </div>
     </section>
@@ -118,5 +157,6 @@
     <span id="footer-version"></span>
   </footer>
   <script type="module" src="/site.js"></script>
+  <script type="module" src="/studio.js"></script>
 </body>
 </html>

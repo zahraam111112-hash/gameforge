@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { critic, director, builder, verifier, reviewer } from './agents.mjs';
 import { simulate } from './sim.mjs';
 import * as devlog from './devlog.mjs';
+import { emit } from './activity.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLISHED = path.join(ROOT, 'site', 'public', 'game');
@@ -67,31 +68,59 @@ async function main() {
     const started = Date.now();
     const vBefore = readVersion();
     console.log(`\n=== round ${round} (current ${vBefore.version}) ===`);
+    emit({ kind: 'round', phase: 'start', round, version: vBefore.version });
     try {
+      emit({ kind: 'phase', phase: 'observe', status: 'start', round });
       const m = await metrics();
+      emit({ kind: 'metrics', round, metrics: m });
       const history = devlog.read(80);
 
       const c = await critic(ROOT, { version: vBefore.version, metrics: m, devlog: history });
       devlog.append({ kind: 'note', agent: 'critic', title: c.headline ?? 'critique', why: JSON.stringify(c.problems ?? []), tags: ['critique'] });
+      emit({
+        kind: 'phase', phase: 'observe', status: 'done', round,
+        headline: c.headline ?? '', strengths: c.strengths ?? [], problems: c.problems ?? [],
+      });
       console.log('[critic]', c.headline);
 
+      emit({ kind: 'phase', phase: 'direct', status: 'start', round });
       const plan = await director(ROOT, { critique: c, devlog: history });
+      emit({
+        kind: 'phase', phase: 'direct', status: 'done', round,
+        theme: plan.theme ?? '', rationale: plan.rationale ?? '',
+        tasks: (plan.tasks ?? []).map((t) => ({ title: t.title, area: t.area, brief: t.brief })),
+      });
       console.log('[director]', plan.theme, plan.tasks?.length, 'tasks');
 
       const tasks = (plan.tasks ?? []).slice(0, 4);
       const built = [];
-      for (const t of tasks) {
+      for (const [i, t] of tasks.entries()) {
         console.log(`[builder] ${t.title}`);
+        emit({ kind: 'phase', phase: 'build', status: 'start', round, task: t.title, index: i + 1, total: tasks.length });
         const res = await builder(ROOT, t, { version: vBefore.version });
         built.push({ task: t, res });
+        emit({
+          kind: 'phase', phase: 'build', status: 'done', round, task: t.title,
+          summary: res.summary ?? '', files: res.files ?? [], selfReport: res.tests ?? '',
+        });
         if (res.tests?.startsWith?.('fail')) console.warn('[builder] reported failing tests:', res.tests);
       }
 
       // Deterministic gates — never trust the agents' self-report alone.
-      const test = await run('npm', ['test']);
-      const verify = await run('node', ['harness/verify.mjs']);
+      // Each gate publishes what it actually printed: a green tick that hides its
+      // output is the exact thing the public view exists to prevent.
+      const gate = async (name, label, cmd, args) => {
+        emit({ kind: 'gate', name, label, status: 'running', round });
+        const t0 = Date.now();
+        const r = await run(cmd, args);
+        const text = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.trim();
+        emit({ kind: 'gate', name, label, status: r.ok ? 'pass' : 'fail', round, ms: Date.now() - t0, output: text.slice(-3000) });
+        return r;
+      };
+      const test = await gate('test', 'npm test', 'npm', ['test']);
+      const verify = await gate('verify', 'node harness/verify.mjs', 'node', ['harness/verify.mjs']);
       // vite.config writes into game/.stage, so an unverified build never reaches the site.
-      const build = await run('npm', ['run', 'build']);
+      const build = await gate('build', 'npm run build', 'npm', ['run', 'build']);
       const allGreen = test.ok && build.ok && verify.ok;
 
       const notes = await reviewer(ROOT, { round: { theme: plan.theme, rationale: plan.rationale, tasks }, verification: { allGreen } });
@@ -103,6 +132,10 @@ async function main() {
         devlog.append({
           kind: 'decision', agent: 'orchestrator', title: `Round ${round} held back`,
           why: `Verification failed. tests=${test.ok} build=${build.ok} verify=${verify.ok}. ${(test.stderr || build.stderr || '').slice(-400)}`,
+        });
+        emit({
+          kind: 'round', phase: 'held_back', round,
+          why: `tests=${test.ok ? 'pass' : 'FAIL'} build=${build.ok ? 'pass' : 'FAIL'} verify=${verify.ok ? 'pass' : 'FAIL'}`,
         });
         console.log('[harness] held back — code not shipped');
         fs.rmSync(path.join(ROOT, 'game', '.stage'), { recursive: true, force: true });
@@ -149,18 +182,29 @@ async function main() {
 
       fs.writeFileSync(path.join(ROOT, 'VERSIONS.md'), versionsIndex());
 
+      let commit = null;
       if (await git(['rev-parse', '--is-inside-work-tree']).then((r) => r.ok)) {
         await git(['add', '-A']);
         const msg = `feat: ${vNext.version} — ${plan.theme ?? 'round ' + round}\n\n${plan.rationale ?? ''}\n\nCo-Authored-By: Navara Harness <harness@gameforge.local>`;
         await git(['commit', '-m', msg]);
+        const rev = await git(['rev-parse', '--short', 'HEAD']);
+        commit = rev.ok ? rev.stdout.trim() : null;
         const push = await git(['push', 'origin', 'HEAD:main']);
         console.log('[harness] pushed:', push.ok ? 'ok' : push.stderr.slice(0, 200));
+        emit({ kind: 'git', commit, pushed: push.ok, round, version: vNext.version });
       }
 
-      console.log(`[harness] shipped ${vNext.version} in ${((Date.now() - started) / 1000).toFixed(0)}s`);
+      const secs = ((Date.now() - started) / 1000).toFixed(0);
+      emit({
+        kind: 'round', phase: 'shipped', round, version: vNext.version,
+        theme: plan.theme ?? '', seconds: Number(secs), commit,
+        changes: built.map((b) => b.res.summary).filter(Boolean),
+      });
+      console.log(`[harness] shipped ${vNext.version} in ${secs}s`);
     } catch (e) {
       console.error('[harness] round failed:', e.message ?? e);
       devlog.append({ kind: 'decision', agent: 'orchestrator', title: `Round ${round} failed`, why: String(e.message ?? e).slice(0, 800) });
+      emit({ kind: 'round', phase: 'failed', round, why: String(e.message ?? e).slice(0, 600) });
       // A round that dies mid-build leaves half-finished edits behind; the next
       // round must start from the last shipped state or quality drifts downward.
       if (process.env.GAMEFORGE_REVERT_ON_FAIL !== '0') await revertToHead();
