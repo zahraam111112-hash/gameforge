@@ -22,6 +22,7 @@ export class Room {
     this.frame = 0;
     this.startedAt = Date.now();
     this.winner = null;
+    this._keys = new Map();
   }
 
   add(id, name) {
@@ -135,31 +136,43 @@ export class Room {
     };
   }
 
-  /** This tick's player records plus their change keys, computed once.
-   *  Every client in the room shares this; building it per client made the
-   *  broadcast O(N²) in map work and starved the room under load. */
+  /** This tick's full snapshot and the players that changed since the last one.
+   *  The changed list is computed once for the room, so a client's delta costs
+   *  the number of players who moved rather than the size of the room: the old
+   *  shape asked every client to compare every player, which at 100 players and
+   *  100 clients was 10k comparisons a tick and dragged the room to ~8Hz. */
   prepare() {
     const records = [];
     const keys = new Map();
+    const changed = [];
     for (const p of this.players.values()) {
       const rec = {
         id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
         facing: p.facing, hp: p.hp, score: p.score ?? 0, dead: !!p.dead,
       };
-      keys.set(rec.id, `${rec.x},${rec.y},${rec.facing},${rec.hp},${rec.score},${rec.dead ? 1 : 0},${rec.name}`);
+      const key = `${rec.x},${rec.y},${rec.facing},${rec.hp},${rec.score},${rec.dead ? 1 : 0},${rec.name}`;
+      keys.set(rec.id, key);
+      if (this._keys.get(rec.id) !== key) changed.push(rec);
       records.push(rec);
     }
-    return { records, keys, at: this.frame, winner: this.winner };
+    const gone = [...this._keys.keys()].filter((id) => !keys.has(id));
+    this._keys = keys;
+    return { records, keys, changed, gone, at: this.frame, winner: this.winner };
   }
 
   /** What this client has not seen yet, given the view it holds. */
   render(views, seen) {
-    const players = [];
-    for (const rec of views.records) {
-      if (seen?.get(rec.id) !== views.keys.get(rec.id)) players.push(rec);
+    // No view yet: this client needs everyone once.
+    if (!seen) {
+      return { t: 'state', room: this.kind, frame: views.at, winner: views.winner, players: views.records, gone: [], keys: views.keys };
     }
-    const gone = [...(seen?.keys() ?? [])].filter((id) => !views.keys.has(id));
-    return { t: 'state', room: this.kind, frame: views.at, winner: views.winner, players, gone, keys: views.keys };
+    // A client whose roster is stale (it missed a join or a leave) also needs a
+    // full snapshot: a delta against a view that no longer lines up would leave
+    // an unknown player on their screen forever.
+    if (views.gone.length || seen.size !== views.keys.size) {
+      return { t: 'state', room: this.kind, frame: views.at, winner: views.winner, players: views.records, gone: views.gone, keys: views.keys };
+    }
+    return { t: 'state', room: this.kind, frame: views.at, winner: views.winner, players: views.changed, gone: [], keys: views.keys };
   }
 
   /** Everything that changed since the last snapshot this client received.
