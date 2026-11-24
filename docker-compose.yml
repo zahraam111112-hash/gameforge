@@ -79,8 +79,11 @@ services:
       - gameforge_node_modules:/app/node_modules
     networks: [gameforge_net]
     deploy:
+      # Each bot is a socket plus a timer, and the kernel accounts those toward
+      # the pids limit. At 512 a 200-bot fleet hit the ceiling and the fleet
+      # itself, not the server, was what timed out.
       resources:
-        limits: { cpus: "2.00", memory: 1024M, pids: 512 }
+        limits: { cpus: "2.00", memory: 1536M, pids: 4096 }
     security_opt: ["no-new-privileges:true"]
 
 networks:
