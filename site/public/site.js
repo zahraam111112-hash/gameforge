@@ -4,12 +4,19 @@ const fmtDate = (iso) => {
   return Number.isNaN(d) ? iso : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-async function json(url, fallback) {
+// A page that refreshes decoration on a timer must never let those requests
+// pile up. Each stalled one holds a connection to this origin, and the game is
+// an iframe on the same origin: a handful of stuck polls makes the play area
+// wait forever behind them while the server answers every request in 45 ms.
+// Aborting after a few seconds returns the connection and the next tick starts.
+async function json(url, fallback, timeoutMs = 8000) {
+  const ac = new AbortController();
+  const abort = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const r = await fetch(url, { cache: 'no-store' });
+    const r = await fetch(url, { cache: 'no-store', signal: ac.signal });
     if (!r.ok) return fallback;
     return await r.json();
-  } catch { return fallback; }
+  } catch { return fallback; } finally { clearTimeout(abort); }
 }
 
 async function loadVersion() {
@@ -134,5 +141,16 @@ loadVersions();
 loadDevlog();
 loadRoadmap();
 loadLobby();
-setInterval(loadLobby, 5000);
-setInterval(loadDevlog, 30000);
+// Overlapping runs are pointless: json() already bounds each call, and a second
+// copy of the same refresh racing the first only spends connections the play
+// area needs. Each tick skips itself while the previous one is still going.
+function spaced(fn, ms) {
+  let running = false;
+  return setInterval(async () => {
+    if (running) return;
+    running = true;
+    try { await fn(); } finally { running = false; }
+  }, ms);
+}
+spaced(loadLobby, 5000);
+spaced(loadDevlog, 30000);

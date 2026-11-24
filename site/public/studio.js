@@ -300,10 +300,25 @@
     if (!pinned) select(newest);
   }
 
+  // One request in flight at a time, and never for longer than the poll interval.
+  //
+  // A 2.5 s timer with no guard and no timeout piles requests up as soon as the
+  // link slows: each stalled request holds one of the browser's six connections
+  // to this origin, so after ~15 s of stalls the pool is full and the game
+  // iframe — a different URL on the same origin — queues behind them forever.
+  // Measured from outside: page with this script live took 121 s and never
+  // showed the game; with /api/activity blocked, 2.5 s. The audience saw a blank
+  // play area and blamed the game.
+  let inFlight = false;
   async function poll() {
+    if (inFlight) return;
+    inFlight = true;
+    // A stalled poll must give its connection back, or the next one cannot start.
+    const ac = new AbortController();
+    const abort = setTimeout(() => ac.abort(), POLL_MS * 2);
     try {
       const q = cursor == null ? '?limit=80' : `?from=${cursor}`;
-      const r = await fetch(`/api/activity${q}`, { cache: 'no-store' });
+      const r = await fetch(`/api/activity${q}`, { cache: 'no-store', signal: ac.signal });
       if (!r.ok) throw new Error(`http ${r.status}`);
       const data = await r.json();
       for (const ev of data.events ?? []) apply(ev);
@@ -311,16 +326,21 @@
       badge.classList.toggle('on', !!data.active);
       badgeLabel.textContent = data.active ? 'live — a round is running' : 'idle — between rounds';
     } catch (e) {
-      log(e.message);
+      log(e.name === 'AbortError' ? 'slow — retrying' : e.message);
       badge.classList.remove('on');
-      badgeLabel.textContent = 'offline';
+      badgeLabel.textContent = e.name === 'AbortError' ? 'reconnecting' : 'offline';
+    } finally {
+      clearTimeout(abort);
+      inFlight = false;
     }
   }
 
   renderPhases();
   renderGates();
   renderCritic(null);
-  poll();
-  setInterval(poll, POLL_MS);
+  // The studio is a side panel, not the point of the page: let the hero, the
+  // version picker and the play area have the first few seconds of the link.
+  timers.push(setTimeout(poll, 1500));
+  timers.push(setInterval(poll, POLL_MS));
   timers.push(setInterval(refreshTimes, 1000));
 })();

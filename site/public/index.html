@@ -89,7 +89,11 @@
       <p class="sub">Story · Endless · Online co-op · Battle royale. Keyboard: <kbd>A</kbd><kbd>D</kbd> move,
         <kbd>Space</kbd> jump, <kbd>J</kbd> strike, <kbd>K</kbd> dash. On phones, touch controls appear.</p>
       <div class="frame">
-        <iframe id="gameframe" src="/game/latest/index.html?v=dev" title="Navara — playable build" loading="lazy"></iframe>
+        <!-- Eager, not lazy. Lazily, nothing was requested until the play area
+             scrolled into view, so a visitor who clicked "Play latest" waited out
+             a boot that had not started. It is one small page plus two assets,
+             fetched alongside the page's own. -->
+        <iframe id="gameframe" src="/game/latest/index.html?v=dev" title="Navara — playable build"></iframe>
       </div>
       <div class="play-actions">
         <label>Version
