@@ -1,13 +1,13 @@
 {
-  "version": "0.1.16",
-  "builds": 17,
-  "updatedAt": "2026-11-24T12:39:02.040Z",
+  "version": "0.1.17",
+  "builds": 18,
+  "updatedAt": "2026-11-24T14:15:31.787Z",
   "tests": {
     "total": 12,
     "passed": 12
   },
-  "theme": "Land the Wire — one drain, real FX, proven gate",
-  "round": 8,
+  "theme": "Make the Wire Visible",
+  "round": 9,
   "roadmap": [
     "Complete story act one with a three-phase boss",
     "Ranked battle royale with server-authoritative combat",

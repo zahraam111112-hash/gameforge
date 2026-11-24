@@ -5,6 +5,113 @@ const PARALLAX = [
   { factor: 0.35, band: 0.72, color: 'near', amp: 14 },
 ];
 
+/* ── Fixed-pool FX layer ────────────────────────────────────────────────────
+ * One bounded place for the short, loud feedback a run needs: a respawn flash, a
+ * grey puff where a body left the stage, the pulse a locked door finally gives,
+ * a ring on the pole that just saved you, a kill burst and small sparkles for
+ * coins / hurt / heal / key.
+ *
+ * The contract (shared with main.js, which owns the event drain):
+ *   renderer.fx(kind, x, y, opts)  — queue one effect, world coordinates.
+ *   renderer.stepFx(dt)            — age the pool by dt *seconds* and retire.
+ * Both are safe in any order, before or after a draw, and unknown kinds are a
+ * silent no-op rather than a throw: presentation must never be able to break a
+ * run. Nothing here allocates past the 16 slots built in the constructor, and
+ * nothing here calls Math.random, so a seeded run replays the same effects.
+ *
+ * Draw budget: every active slot paints exactly ONE canvas primitive (one fill
+ * or one stroke — multi-part shapes live inside a single path), so a saturated
+ * pool is at most FX_POOL_SIZE draw calls per frame. That is the number the FX
+ * pass adds to the frame, and it cannot grow with enemy count or room size.
+ *
+ * Draw order: world-space effects go in the existing translated pass, after the
+ * tiles/entities/player/particles and before the vignette; the respawn flash is
+ * full-frame, so it is painted after the translate is restored and still before
+ * the vignette (i.e. it blooms the whole screen without washing out the frame).
+ */
+export const FX_POOL_SIZE = 16;
+
+/** Shared immutable stand-in so a call without opts allocates nothing. */
+const NO_OPTS = Object.freeze({});
+const TAU = Math.PI * 2;
+
+/** Lifetime of each kind, in seconds. A respawn flash is a quarter second: long
+ *  enough to read as a hit, short enough to never hide the first frame back. */
+const FX_LIFE = Object.freeze({
+  respawn: 0.25,
+  fell: 0.55,
+  checkpoint: 0.45,
+  door: 0.5,
+  kill: 0.3,
+  coin: 0.26,
+  hurt: 0.32,
+  heal: 0.3,
+  key: 0.3,
+});
+
+/** A boss leaves a bigger, redder, longer burst than a mook. Same slot, same
+ *  one draw call — the difference is numbers, not a second code path. */
+const FX_KILL_BOSS_LIFE = 0.55;
+
+/** Extra names an event switch might reasonably reach for. Mapped to the four
+ *  canonical kinds so a naming mismatch between the drain (main.js) and this
+ *  file degrades to "the right effect" instead of "silence". */
+const FX_ALIAS = Object.freeze({
+  exitLocked: 'door',
+  exitlocked: 'door',
+  exit_locked: 'door',
+  doorPulse: 'door',
+  doorpulse: 'door',
+  checkpointPulse: 'checkpoint',
+  checkpointpulse: 'checkpoint',
+  respawnFlash: 'respawn',
+  respawnflash: 'respawn',
+  fellPuff: 'fell',
+  fellpuff: 'fell',
+  killBurst: 'kill',
+  killburst: 'kill',
+  sparkle: 'coin',
+});
+
+/** Fixed per-slot jitter, [dx, dy, scale, rot]. Generated once at module load
+ *  from a hard-coded LCG seed (not Math.random), so slot 5 of run A lands in the
+ *  same place as slot 5 of run B: effects stay deterministic and testable, and
+ *  the hot loop reads four plain numbers instead of rolling dice. */
+export const FX_OFFSETS = (() => {
+  let s = 0x4e4152; // 'NAR'
+  const next = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  const rows = [];
+  for (let i = 0; i < FX_POOL_SIZE; i++) {
+    rows.push(Object.freeze([
+      next() * 2 - 1,          // dx
+      next() * 2 - 1,          // dy
+      0.7 + next() * 0.6,      // scale
+      next(),                  // rotation phase, 0..1
+    ]));
+  }
+  return Object.freeze(rows);
+})();
+
+/** Canonicalise a kind string; returns '' for anything we do not draw. */
+export function fxKind(kind) {
+  if (typeof kind !== 'string' || kind.length === 0) return '';
+  if (FX_LIFE[kind] !== undefined) return kind;
+  const alias = FX_ALIAS[kind];
+  return alias !== undefined ? alias : '';
+}
+
+/** How long one effect of `kind` lives, given its opts. Exported so a test (or
+ *  a future HUD) can reason about the pool without building a canvas. */
+export function fxLife(kind, opts) {
+  const k = fxKind(kind);
+  if (k === '') return 0;
+  if (k === 'kill' && opts && opts.boss) return FX_KILL_BOSS_LIFE;
+  return FX_LIFE[k];
+}
+
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -15,6 +122,15 @@ export class Renderer {
     this.floaters = [];
     this.shake = 0;
     this.t = 0;
+    // Fixed FX pool — built once, never grown. Slots are plain pre-shaped
+    // objects so queueing an effect at 60Hz allocates nothing at all.
+    this.fxSlots = [];
+    for (let i = 0; i < FX_POOL_SIZE; i++) {
+      this.fxSlots.push({ kind: 'none', x: 0, y: 0, t: 0, life: 0, opts: NO_OPTS, active: false });
+    }
+    this.fxHead = 0;        // ring cursor: the oldest slot when the pool is full
+    this.fxActive = 0;      // live slots, for tests + a future debug HUD
+    this.fxExternalSteps = 0; // >0 once a host drives stepFx() itself
   }
 
   burst(x, y, color, n = 8, speed = 2.2) {
@@ -31,6 +147,74 @@ export class Renderer {
 
   kick(n = 4) { this.shake = Math.max(this.shake, n); }
 
+  /** Queue one effect. Safe to call before the first draw, between draws, or
+   *  from inside a draw's caller; an unknown/absent kind is a no-op and this
+   *  function never throws. When all 16 slots are live the oldest one is
+   *  recycled, so a burst of events can only ever cost 16 slots — never an
+   *  unbounded array, never a garbage spike in the middle of a fight.
+   *
+   *  `opts` is stored by reference (the drain owns it) but no copy is made and
+   *  no default object is created; the only read is `opts.boss` for the kill
+   *  burst. */
+  fx(kind, x, y, opts = NO_OPTS) {
+    const k = fxKind(kind);
+    if (k === '') return null;
+    const life = fxLife(k, opts);
+    let slot = null;
+    // Prefer a retired slot; otherwise take the oldest (ring cursor).
+    for (let i = 0; i < FX_POOL_SIZE; i++) {
+      const cand = this.fxSlots[(this.fxHead + i) % FX_POOL_SIZE];
+      if (!cand.active) { slot = cand; break; }
+    }
+    if (!slot) {
+      slot = this.fxSlots[this.fxHead];
+      this.fxHead = (this.fxHead + 1) % FX_POOL_SIZE;
+    } else {
+      this.fxActive++;
+    }
+    slot.kind = k;
+    slot.x = Number.isFinite(x) ? x : 0;
+    slot.y = Number.isFinite(y) ? y : 0;
+    slot.t = 0;
+    slot.life = life;
+    slot.opts = opts === undefined || opts === null ? NO_OPTS : opts;
+    slot.active = true;
+    return slot;
+  }
+
+  /** Advance the pool by dt *seconds*. Retired slots are marked inactive (never
+   *  spliced out — the array is fixed). Clamped so a long frame stall or a NaN
+   *  dt cannot retire the whole pool with a nonsense time.
+   *
+   *  Calling it is optional: if no host ever steps the pool, draw() ages it by
+   *  one 60Hz frame itself so plain `renderer.fx(...)` still animates. Once a
+   *  host takes ownership (main.js does, per fixed step) the internal clock
+   *  switches off, so effects are never aged twice on the same frame. */
+  stepFx(dt) {
+    this.fxExternalSteps = 1;
+    return this._ageFx(dt);
+  }
+
+  /** The aging itself, shared by stepFx() and the fallback clock in draw(). */
+  _ageFx(dt) {
+    let d = typeof dt === 'number' && Number.isFinite(dt) ? dt : 0;
+    if (d < 0) d = 0;
+    if (d > 0.25) d = 0.25; // a tab-switch stall is not 8 seconds of effect
+    if (this.fxActive <= 0) return 0;
+    for (let i = 0; i < FX_POOL_SIZE; i++) {
+      const s = this.fxSlots[i];
+      if (!s.active) continue;
+      s.t += d;
+      if (s.t >= s.life) {
+        s.active = false;
+        s.kind = 'none';
+        s.opts = NO_OPTS;
+        this.fxActive--;
+      }
+    }
+    return this.fxActive;
+  }
+
   follow(p, world) {
     const targetX = p.x + p.w / 2 - VIEW_W / 2;
     const targetY = p.y + p.h / 2 - VIEW_H / 2 - 10;
@@ -42,6 +226,10 @@ export class Renderer {
     const ctx = this.ctx;
     const pal = world.spec.palette;
     this.t++;
+    // If nobody drives stepFx() (a bare Renderer in a test or a future client),
+    // age the pool one 60Hz frame per draw so queued effects still animate. A
+    // host that calls stepFx() takes over and this fallback disarms itself.
+    if (this.fxExternalSteps === 0 && this.fxActive > 0) this._ageFx(1 / 60);
     if (this.shake > 0) this.shake *= 0.86;
 
     const sx = (Math.random() - 0.5) * this.shake;
@@ -65,7 +253,13 @@ export class Renderer {
 
     this._particles(ctx);
     this._floaters(ctx);
+    // World-space FX sit on top of everything in the level but under the frame
+    // overlays, so a respawn flash or a kill burst never bisects an enemy.
+    this._fxWorld(ctx);
     ctx.restore();
+    // Full-frame effects (the respawn flash) are painted in screen space, after
+    // the camera translate and still before the vignette.
+    this._fxScreen(ctx);
     this._vignette(ctx);
   }
 
@@ -296,6 +490,121 @@ export class Renderer {
     }
     this.floaters = this.floaters.filter((f) => f.life > 0);
     ctx.globalAlpha = 1;
+  }
+
+  /** World-space half of the FX pass: at most one canvas primitive per live
+   *  slot, no allocations, no Math.random. Slots are walked in place; the fixed
+   *  offset table supplies the per-slot jitter that used to be a random roll. */
+  _fxWorld(ctx) {
+    let draws = 0;
+    for (let i = 0; i < FX_POOL_SIZE; i++) {
+      const s = this.fxSlots[i];
+      if (!s.active) continue;
+      const off = FX_OFFSETS[i];
+      const p = s.life > 0 ? s.t / s.life : 1;
+      if (p >= 1) continue;
+      const fade = 1 - p;
+      const dx = off[0], dy = off[1], scale = off[2], rot = off[3];
+      switch (s.kind) {
+        case 'fell': {
+          // A grey puff that rises and disperses — deliberately nothing like the
+          // orange/red kill burst, so a pit death reads as "it fell" at a glance.
+          ctx.globalAlpha = fade * 0.75;
+          ctx.fillStyle = '#8b95a8';
+          const r = 2.5 + p * (7 + scale * 4);
+          ctx.beginPath();
+          ctx.arc(s.x + dx * p * 7, s.y - p * (14 + dy * 4), r, 0, TAU);
+          ctx.fill();
+          draws++;
+          break;
+        }
+        case 'checkpoint': {
+          // Expanding ring on the pole that just saved you.
+          ctx.globalAlpha = fade * 0.9;
+          ctx.strokeStyle = '#33e1c0';
+          ctx.lineWidth = 2;
+          const r = 4 + p * 16;
+          ctx.beginPath();
+          ctx.arc(s.x + 5, s.y + 10, r, 0, TAU);
+          ctx.stroke();
+          draws++;
+          break;
+        }
+        case 'door': {
+          // The locked gate's answer: an amber ring pushed out of the exit.
+          ctx.globalAlpha = fade * 0.85;
+          ctx.strokeStyle = '#ffb03a';
+          ctx.lineWidth = 2;
+          const r = 5 + p * 16;
+          ctx.strokeRect(s.x + 8 - r, s.y + 16 - r * 1.5, r * 2, r * 3);
+          draws++;
+          break;
+        }
+        case 'kill': {
+          // One path, one fill: an 8-point star that opens and fades. The boss
+          // variant is bigger and red instead of orange (opts.boss).
+          const boss = s.opts.boss === true;
+          ctx.globalAlpha = fade;
+          ctx.fillStyle = boss ? '#ff3b5c' : '#ff9f43';
+          const R = (boss ? 14 : 6) * (0.5 + p * 1.1) * scale;
+          const r2 = R * 0.42;
+          const a0 = rot * TAU;
+          ctx.beginPath();
+          for (let k = 0; k < 8; k++) {
+            const a = a0 + (k / 8) * TAU;
+            const rad = (k & 1) === 0 ? R : r2;
+            const px = s.x + Math.cos(a) * rad;
+            const py = s.y + Math.sin(a) * rad;
+            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.fill();
+          draws++;
+          break;
+        }
+        case 'coin':
+        case 'hurt':
+        case 'heal':
+        case 'key': {
+          // Small one-shot sparkles, all off the same slot type. A single 2px
+          // mote thrown along the slot's fixed offset and fading out.
+          ctx.globalAlpha = fade;
+          ctx.fillStyle = s.kind === 'hurt' ? '#ff6b6b'
+            : s.kind === 'heal' ? '#33e1c0'
+              : '#ffd447';
+          const d = 3 + p * (6 + scale * 5);
+          ctx.fillRect(s.x + dx * d, s.y + dy * d - p * 3, 2, 2);
+          draws++;
+          break;
+        }
+        default:
+          break; // 'respawn' is screen-space; anything else draws nothing
+      }
+    }
+    ctx.globalAlpha = 1;
+    this.fxDraws = draws;
+    return draws;
+  }
+
+  /** Screen-space half of the FX pass. The respawn flash is a full-frame white
+   *  wash fading over its ~0.25s life — the loudest thing a run can show, and
+   *  the one frame overlay that must not be inside the camera translate. */
+  _fxScreen(ctx) {
+    let draws = this.fxDraws;
+    for (let i = 0; i < FX_POOL_SIZE; i++) {
+      const s = this.fxSlots[i];
+      if (!s.active || s.kind !== 'respawn') continue;
+      const p = s.life > 0 ? s.t / s.life : 1;
+      if (p >= 1) continue;
+      const fade = 1 - p;
+      ctx.globalAlpha = fade * fade * 0.9;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      draws++;
+    }
+    ctx.globalAlpha = 1;
+    this.fxDraws = draws;
+    return draws;
   }
 
   _vignette(ctx) {
