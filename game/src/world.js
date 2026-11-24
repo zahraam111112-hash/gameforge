@@ -81,8 +81,10 @@ export const isEnemyAlive = (e) => Boolean(e) && e.kind === 'enemy' && !e.dead;
  *  is what keeps a 3600-step simulation at constant memory. */
 export const MAX_EVENTS = 64;
 
-/** A shared, immutable empty result so draining an idle world allocates nothing. */
-const NO_EVENTS = Object.freeze([]);
+/** A shared, immutable empty result so draining an idle world allocates nothing.
+ *  Exported so callers (main.js) can drain a world-less frame without allocating
+ *  a fresh array, and so the "no events" case is a single identity. */
+export const NO_EVENTS = Object.freeze([]);
 
 /** Kill bounty for an enemy type — the single source of truth for scoring.
  *  Used by the engine when HP hits 0, so browser and headless play agree. */
@@ -146,6 +148,38 @@ export class World {
     this.waveSpawns = [size, second];
   }
 
+  /** Record one one-shot gameplay event. The engine emits from the code path
+   *  that actually did the thing (a swing, a death, a latch) so the audio layer
+   *  never has to guess from input or from register diffs — one event, one
+   *  sound. The buffer is trimmed from the front at MAX_EVENTS so a headless
+   *  run that never drains it cannot grow memory per step. */
+  emit(type, data = null) {
+    const ev = data ? { type, ...data } : { type };
+    this.events.push(ev);
+    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    return ev;
+  }
+
+  /** Take every pending event and start a fresh buffer. An idle world returns
+   *  the shared frozen NO_EVENTS so draining costs no allocation. */
+  drainEvents() {
+    if (this.events.length === 0) return NO_EVENTS;
+    const out = this.events;
+    this.events = [];
+    return out;
+  }
+
+  /** The one place status changes, so 'win'/'lose' fire exactly once even when
+   *  several code paths (exit, boss, pit, hp) could reach the same verdict on
+   *  the same frame. */
+  _setStatus(next) {
+    if (this.status === next) return false;
+    this.status = next;
+    if (next === 'won') this.emit('win', { frame: this.frame });
+    else if (next === 'lost') this.emit('lose', { frame: this.frame });
+    return true;
+  }
+
   /** Live enemies that belong to the arena/boss gate (not coins, spikes, exit). */
   countAlive(type = null) {
     let n = 0;
@@ -171,7 +205,9 @@ export class World {
    *  so the world state a client receives is the same for every player. */
   _updateWaves() {
     if (this.levelId !== 'arena' || this.wavesTotal === 0) return;
-    if (this.wave >= this.wavesTotal) return; // nothing left to spawn
+    // Once every seeded wave has been pulled in there is nothing left to spawn,
+    // ever: the gate below means a surge can never bring a third wave in.
+    if (this.wave >= this.wavesTotal) return;
     this.waveTimer++;
     const alive = this.countAlive('enemy') + this.countAlive('boss');
     const spawnNow = this.wave === 0
@@ -218,8 +254,11 @@ export class World {
    *  never drift between story spawns, surges and the boss. */
   _makeEnemy(type, x, y) {
     const t = ENEMY_TYPES[type] ?? ENEMY_TYPES.enemy1;
+    // Sequential per world, so a seed replays the exact same ids and an event
+    // stream can be compared element for element between two runs.
+    this._enemyIds = (this._enemyIds ?? 0) + 1;
     return {
-      type, kind: 'enemy', x, y, w: t.w, h: t.h,
+      id: this._enemyIds, type, kind: 'enemy', x, y, w: t.w, h: t.h,
       vx: t.speed * (this.rng() < 0.5 ? -1 : 1), vy: 0, hp: t.hp, maxHp: t.hp,
       dmg: t.dmg, score: t.score, onGround: false, hurtT: 0, dead: false,
       fell: false, jumpChance: t.jump, boss: type === 'boss', attackT: 0, phase: 0,
@@ -297,6 +336,10 @@ export class World {
   }
 
   updateEnemies() {
+    // Once per fixed step (tick() and tickPlayerOnly() both call this), so the
+    // 'locked gate' sting is rate-limited by frames, not by how many players
+    // happen to be standing on the exit.
+    if (this.exitLockedT > 0) this.exitLockedT--;
     for (const e of this.entities) {
       if (e.kind !== 'enemy' || e.dead) continue;
       if (e.hurtT > 0) e.hurtT--;
@@ -386,6 +429,10 @@ export class World {
     // multiplier lives in damageEnemy, so "how hard do I hit" has a single home.
     if (input.attack && p.attackCd <= 0) {
       p.attackCd = ATTACK_CD; p.attackT = 8;
+      // Emitted before the hits resolve so a listener hears the swing and then
+      // the kill it caused, in that order. Holding the button yields one strike
+      // event per ATTACK_CD frames, never one per frame.
+      this.emit('strike', { x: Math.round(p.x), y: Math.round(p.y), dir: dirForDash });
       const hit = { x: p.x + (dirForDash > 0 ? p.w - 2 : -14), y: p.y + 2, w: 18, h: p.h - 4 };
       for (const e of this.entities) {
         if (e.kind !== 'enemy' || e.dead) continue;
@@ -394,31 +441,64 @@ export class World {
     }
     if (p.attackT > 0) p.attackT--;
 
-    // Pickups / hazards / exit.
+    // Pickups / hazards / exit. Each latch emits once because the entity is
+    // consumed or flagged: a checkpoint already active is not re-emitted, so
+    // standing on it cannot machine-gun the sting.
     for (const e of this.entities) {
       if (e.dead) continue;
-      if (e.type === 'coin' && aabb(p, e)) { e.dead = true; p.score += 5; p.coins++; }
-      else if (e.type === 'health' && aabb(p, e)) { e.dead = true; p.hp = Math.min(p.maxHp, p.hp + 25); }
-      else if (e.type === 'key' && aabb(p, e)) { e.dead = true; this.keys++; }
-      else if (e.type === 'checkpoint' && aabb(p, e)) { e.active = true; p.checkpoint = { x: e.x, y: e.y }; }
-      else if (e.type === 'spike' && aabb(p, e)) this.hurtPlayer(p, e.dmg);
-      else if (e.type === 'exit' && aabb(p, e)) this.status = 'won';
+      if (e.type === 'coin' && aabb(p, e)) {
+        e.dead = true; p.score += 5; p.coins++;
+        this.emit('coin', { coins: p.coins, score: p.score });
+      } else if (e.type === 'health' && aabb(p, e)) {
+        e.dead = true; p.hp = Math.min(p.maxHp, p.hp + 25);
+        this.emit('heal', { hp: p.hp });
+      } else if (e.type === 'key' && aabb(p, e)) {
+        e.dead = true; this.keys++;
+        this.emit('key', { keys: this.keys });
+      } else if (e.type === 'checkpoint' && aabb(p, e)) {
+        // The latch is the event: only an inactive checkpoint fires it, and it
+        // stays latched, so one crossing is one sound.
+        if (!e.active) {
+          e.active = true;
+          p.checkpoint = { x: e.x, y: e.y };
+          this.emit('checkpoint', { id: e.id ?? null, x: Math.round(e.x), y: Math.round(e.y) });
+        }
+      } else if (e.type === 'spike' && aabb(p, e)) {
+        this.hurtPlayer(p, e.dmg, null, 'spike');
+      } else if (e.type === 'exit' && aabb(p, e)) {
+        this._reachExit();
+      }
     }
 
     for (const e of this.entities) {
       if (e.kind !== 'enemy' || e.dead) continue;
       if (aabb(p, e)) {
         const stomping = p.vy > 1 && p.y + p.h - p.vy <= e.y + 4;
-        if (stomping) { this.damageEnemy(e, 2, 0, p); p.vy = -7; p.energy = Math.min(100, p.energy + 12); }
-        else this.hurtPlayer(p, e.dmg, e.x + e.w / 2);
+        if (stomping) {
+          this.damageEnemy(e, STOMP_DAMAGE, 0, p, { strike: false });
+          p.vy = -7; p.energy = Math.min(100, p.energy + 12);
+        } else {
+          this.hurtPlayer(p, e.dmg, e.x + e.w / 2, 'enemy');
+        }
       }
     }
-    if (p.hp <= 0) this.status = 'lost';
-    if (p.y > this.height + 48) { this.hurtPlayer(p, 999); this.status = 'lost'; }
+    if (p.hp <= 0) this._setStatus('lost');
+    if (p.y > this.height + 48) { this.hurtPlayer(p, 999, null, 'pit'); this._setStatus('lost'); }
   }
 
-  damageEnemy(e, amount, knockDir = 0, attacker = null) {
+  /** Touch the exit flag. An unlocked gate wins; a locked one denies with a
+   *  rate-limited event (EXIT_LOCKED_COOLDOWN frames) so standing on it hears
+   *  one thud rather than sixty per second. */
+  _reachExit() {
+    if (this.exitUnlocked()) { this._setStatus('won'); return; }
+    if (this.exitLockedT > 0) return;
+    this.exitLockedT = EXIT_LOCKED_COOLDOWN;
+    this.emit('exitLocked', { boss: this.countAlive('boss'), wave: this.wave, wavesTotal: this.wavesTotal });
+  }
+
+  damageEnemy(e, amount, knockDir = 0, attacker = null, opts = {}) {
     if (e.hurtT > 0 && !e.boss) return false;
+    const fell = Boolean(opts.fell);
     e.hp -= amount;
     e.hurtT = 8;
     if (knockDir) e.vx = knockDir * 2.2;
@@ -427,12 +507,32 @@ export class World {
     if (e.hp <= 0) {
       e.dead = true;
       if (attacker) attacker.score += enemyScore(e.type, e.score);
+      if (fell) {
+        // A pit is a fall, not a kill: it pays no bounty and gets its own cue,
+        // so the player never hears a "kill" for an enemy that fell on its own.
+        e.fell = true;
+        this.emit('fell', { who: 'enemy', id: e.id ?? null, type: e.type, x: Math.round(e.x), y: Math.round(e.y) });
+      } else {
+        this.emit('kill', {
+          id: e.id ?? null,
+          type: e.type,
+          boss: Boolean(e.boss),
+          score: enemyScore(e.type, e.score),
+          // attacker is the player object the caller acted for, null for a
+          // world-side death (an enemy that walked into a hazard).
+          attacker: attacker?.id ?? 'player',
+          // True when the strike took the last hp on this frame, not a stomp.
+          byStrike: Boolean(attacker) && opts.strike !== false,
+          x: Math.round(e.x),
+          y: Math.round(e.y),
+        });
+      }
       return true;
     }
     return false;
   }
 
-  hurtPlayer(p, amount, fromX) {
+  hurtPlayer(p, amount, fromX, cause = 'contact') {
     if (p.invuln > 0) return;
     p.hp -= amount;
     p.invuln = 48;
@@ -440,6 +540,10 @@ export class World {
       p.vx = (p.x + p.w / 2 < fromX ? -1 : 1) * 3.2;
       p.vy = -4.2;
     }
+    // The player's own life is clamped at 0 so an overkill of 999 from a pit
+    // does not leave a nonsense hp value in the HUD or the snapshots.
+    if (p.hp < 0) p.hp = 0;
+    this.emit('hurt', { id: p.id ?? 'player', hp: p.hp, amount, cause });
   }
 
   /** Multiplayer variant: full physics + combat for one player, no world status
