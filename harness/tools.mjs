@@ -48,6 +48,11 @@ export function makeTools(root) {
     },
     run: async ({ cmd, timeout = 120_000 }) => {
       const allowed = /^(npm|node|npx|git|eslint|tsc|grep|find|ls|cat|wc|playwright|bash -c 'node )/;
+      // An absent cmd used to crash on cmd.split and hand the agent a TypeError
+      // about "undefined" instead of telling it what to send.
+      if (typeof cmd !== 'string' || !cmd.trim()) {
+        throw new Error('run needs a "cmd" string, e.g. {"cmd":"node harness/verify.mjs"}');
+      }
       if (!allowed.test(cmd)) throw new Error(`command not allowed: ${cmd.split(' ')[0]}`);
       return new Promise((resolve) => {
         execFile('bash', ['-lc', cmd], { cwd: root, timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
