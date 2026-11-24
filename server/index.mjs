@@ -157,14 +157,19 @@ function sendState(ws, room) {
 setInterval(() => {
   for (const room of rooms.rooms.values()) {
     if (!room.players.size) continue;
+    // Build each client's delta once and reuse it. Calling delta() per client
+    // rebuilt the room's full id map per client, so a room's real cost was
+    // O(N²) map work even before serialization — that is what starved the
+    // broadcast under a few hundred players.
+    const views = room.prepare();
     for (const ws of wss.clients) {
       if (ws.room !== room || ws.readyState !== 1) continue;
-      const d = room.delta(ws.view);
-      const changed = d.players.length || d.gone.length || d.winner !== ws.winnerSeen;
-      ws.view = d.keys;
-      ws.winnerSeen = d.winner;
+      const msg = room.render(views, ws.view);
+      const changed = msg.players.length || msg.gone.length || msg.winner !== ws.winnerSeen;
+      ws.view = msg.keys;
+      ws.winnerSeen = msg.winner;
       if (!changed) continue;
-      ws.send(JSON.stringify({ t: 'state', room: room.kind, frame: d.frame, winner: d.winner, players: d.players, gone: d.gone }));
+      ws.send(JSON.stringify(msg));
     }
   }
 }, 1000 / 30).unref();

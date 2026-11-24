@@ -135,23 +135,38 @@ export class Room {
     };
   }
 
-  /** Everything that changed since the last snapshot this client received.
-   *  A room of N players used to send N copies of N players every tick; a delta
-   *  is proportional to who actually moved, and an empty room costs nothing. */
-  delta(seen) {
-    const players = [];
-    const next = new Map();
+  /** This tick's player records plus their change keys, computed once.
+   *  Every client in the room shares this; building it per client made the
+   *  broadcast O(N²) in map work and starved the room under load. */
+  prepare() {
+    const records = [];
+    const keys = new Map();
     for (const p of this.players.values()) {
       const rec = {
         id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
         facing: p.facing, hp: p.hp, score: p.score ?? 0, dead: !!p.dead,
       };
-      const key = `${rec.x},${rec.y},${rec.facing},${rec.hp},${rec.score},${rec.dead ? 1 : 0},${rec.name}`;
-      next.set(p.id, key);
-      if (seen?.get(p.id) !== key) players.push(rec);
+      keys.set(rec.id, `${rec.x},${rec.y},${rec.facing},${rec.hp},${rec.score},${rec.dead ? 1 : 0},${rec.name}`);
+      records.push(rec);
     }
-    const gone = [...(seen?.keys() ?? [])].filter((id) => !this.players.has(id));
-    return { frame: this.frame, winner: this.winner, players, gone, keys: next };
+    return { records, keys, at: this.frame, winner: this.winner };
+  }
+
+  /** What this client has not seen yet, given the view it holds. */
+  render(views, seen) {
+    const players = [];
+    for (const rec of views.records) {
+      if (seen?.get(rec.id) !== views.keys.get(rec.id)) players.push(rec);
+    }
+    const gone = [...(seen?.keys() ?? [])].filter((id) => !views.keys.has(id));
+    return { t: 'state', room: this.kind, frame: views.at, winner: views.winner, players, gone, keys: views.keys };
+  }
+
+  /** Everything that changed since the last snapshot this client received.
+   *  A room of N players used to send N copies of N players every tick; a delta
+   *  is proportional to who actually moved, and an empty room costs nothing. */
+  delta(seen) {
+    return this.render(this.prepare(), seen);
   }
 }
 
