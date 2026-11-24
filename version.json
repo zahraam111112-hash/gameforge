@@ -1,13 +1,13 @@
 {
-  "version": "0.1.5",
-  "builds": 6,
-  "updatedAt": "2026-11-24T01:28:51.028Z",
+  "version": "0.1.6",
+  "builds": 7,
+  "updatedAt": "2026-11-24T02:22:19.123Z",
   "tests": {
     "total": 12,
     "passed": 12
   },
-  "theme": "0.1.5 — Fall, Flag, Fight",
-  "round": 4,
+  "theme": "Wired, Not Written — 0.1.6",
+  "round": 6,
   "roadmap": [
     "Complete story act one with a three-phase boss",
     "Ranked battle royale with server-authoritative combat",
