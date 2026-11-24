@@ -37,7 +37,13 @@ async function loadVersions() {
   // it was awaited first the picker stayed empty for that whole time and the
   // page looked like it had no games. Release notes are decoration on the
   // cards, so they arrive later and fill themselves in.
-  const { builds } = await json('/api/builds', { builds: [] });
+  // The one request the page cannot degrade without: no list, no games. Give it
+  // the longest timeout the page allows, because it is 273 bytes and its only
+  // failure mode is a slow path. Measured from outside, it was still pending at
+  // 40 s in roughly two of five cold loads while a 1.4 MB log compressed to
+  // 6 KB and arrived fine on the same connection — so the size is not the
+  // problem and a retry costs less than an empty picker.
+  const { builds } = await json('/api/builds', { builds: [] }, 20000);
   let byVersion = new Map();
   const sel = $('#version-select');
   sel.innerHTML = '';
