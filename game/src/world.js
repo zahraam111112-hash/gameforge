@@ -47,6 +47,20 @@ export const BOSS_HURT_FRAMES = 8;
 /** Stomps stay at 2 so a boss is not beaten by bouncing on it. */
 export const STOMP_DAMAGE = 2;
 
+/** What a fall out of the stage costs. A pit used to be an instant 999 death,
+ *  which threw away every health pickup the player had collected in one step
+ *  and made the three pit gaps in the story stages the only thing the difficulty
+ *  curve was about. Falling now costs a quarter of a full bar and puts the
+ *  player back on their last pole: it is a mistake with a price, not a restart. */
+export const PIT_DAMAGE = 25;
+
+/** Frames of mercy after a fall-respawn. One second of i-frames at 60Hz, so a
+ *  player who lands next to the enemy that shoved them into the pit is not
+ *  immediately charged for a second hit they never got to react to. It is also
+ *  what lets a fall taken mid-invulnerability (see _fallOut's ignoreInvuln)
+ *  still leave the player breathing. */
+export const RESPAWN_INVULN = 60;
+
 /** Fallback bounty for anything that dies without a known ENEMY_TYPES entry. */
 export const DEFAULT_ENEMY_SCORE = 10;
 
@@ -116,9 +130,13 @@ export class World {
     this.keys = 0;
     // Arena bookkeeping. Story stages finish on their 'L' exit or their boss;
     // the arena finishes when every seeded wave has been cleared.
+    // `wave` counts waves *spawned* so far, `wavesDone` counts waves actually
+    // cleared. They live as plain numbers: the old instance field was called
+    // wavesCleared and shadowed a prototype method of the same name, so the
+    // first arena exit touch called a number and threw. One name, one meaning.
     this.wave = 0;
     this.wavesTotal = 0;
-    this.wavesCleared = 0;
+    this.wavesDone = 0;
     this.waveTimer = 0;
     this.exitLockedT = 0;
     this.waveSpawns = [];
@@ -142,7 +160,7 @@ export class World {
     const jitter = Math.floor(this.rng() * 3) - 1; // -1 | 0 | +1, stable per seed
     const size = clamp(base + jitter, 2, base + 1);
     this.wavesTotal = 2;
-    this.wavesCleared = 0;
+    this.wavesDone = 0;
     this.wave = 0;
     this.waveTimer = 0;
     this.waveSpawns = [size, second];
@@ -483,7 +501,43 @@ export class World {
       }
     }
     if (p.hp <= 0) this._setStatus('lost');
-    if (p.y > this.height + 48) { this.hurtPlayer(p, 999, null, 'pit'); this._setStatus('lost'); }
+    // A pit is a mistake with a price, not a restart: _fallOut charges
+    // PIT_DAMAGE and puts the player back on their last pole. It only ends the
+    // run when that damage empties the bar, which hurtPlayer decides.
+    if (p.y > this.height + 48) this._fallOut(p);
+  }
+
+  /** Fallen out of the stage. Kill the momentum (so the next stepPlayer does
+   *  not continue a dashing fall), bill the player PIT_DAMAGE — through
+   *  hurtPlayer with ignoreInvuln, so dropping into a pit while dashing (dashes
+   *  grant i-frames) or right after a hit still costs the same HP as any other
+   *  fall — and, if they survive it, put them back on the authored checkpoint
+   *  pole with RESPAWN_INVULN frames of mercy.
+   *
+   *  The 'respawn' event is emitted only when the player actually comes back:
+   *  a fatal fall ends the run through hurtPlayer's hp<=0 path ('lose'), never
+   *  from here, so 'lost' can only ever be decided in one place. */
+  _fallOut(p) {
+    p.vx = 0; p.vy = 0;
+    const hit = this.hurtPlayer(p, PIT_DAMAGE, null, 'pit', { ignoreInvuln: true, fell: true });
+    // Dead, or the world already ended this frame (a boss win, say): no respawn.
+    if (p.hp <= 0 || this.status !== 'playing') return false;
+    // The authored pole wins over the spawn tile: that is the whole point of
+    // the 'C' tiles in level.js, and p.checkpoint is set by crossing one.
+    const at = p.checkpoint || this.spawnPoint;
+    p.x = at.x; p.y = at.y;
+    p.vx = 0; p.vy = 0;
+    p.onGround = false;
+    p.coyote = 0; p.jumpBuffer = 0;
+    // Clear the attack/dash state so a fall cannot carry a swing or a dash
+    // through the teleport, and so the player always starts the retry neutral.
+    p.attackT = 0; p.attackCd = 0; p.dashT = 0;
+    p.invuln = RESPAWN_INVULN;
+    this.emit('respawn', {
+      id: p.id ?? 'player', x: Math.round(p.x), y: Math.round(p.y),
+      hp: p.hp, cause: 'pit', checkpoint: Boolean(p.checkpoint), applied: hit,
+    });
+    return true;
   }
 
   /** Touch the exit flag. An unlocked gate wins; a locked one denies with a

@@ -79,10 +79,22 @@ export class Audio {
 
   jump()   { this._tone({ freq: 330, slide: 260, dur: 0.12, type: 'square', gain: 0.5 }); }
   dash()   { this._noise(0.16, 0.45, 2400); this._tone({ freq: 520, slide: -300, dur: 0.14, type: 'sawtooth', gain: 0.3 }); }
+  // One voice per engine event type. Each is two nodes at most and short, so a
+  // frame that drains a handful of events stays cheap; the mapping from event
+  // to voice lives in main.js (one event, one call, no inference).
   strike() { this._tone({ freq: 720, slide: -220, dur: 0.09, type: 'triangle', gain: 0.6 }); }
   coin()   { this._tone({ freq: 1046, dur: 0.06, type: 'square', gain: 0.4 }); setTimeout(() => this._tone({ freq: 1568, dur: 0.08, type: 'square', gain: 0.32 }), 55); }
+  heal()   { this._tone({ freq: 466, slide: 262, dur: 0.14, type: 'sine', gain: 0.45 }); }
+  key()    { this._tone({ freq: 1318, slide: 520, dur: 0.09, type: 'square', gain: 0.3 }); }
+  checkpoint() { this._tone({ freq: 587, slide: 392, dur: 0.18, type: 'triangle', gain: 0.45 }); }
   hit()    { this._noise(0.2, 0.55, 420); this._tone({ freq: 160, slide: -80, dur: 0.16, type: 'sawtooth', gain: 0.4 }); }
+  kill()   { this._noise(0.12, 0.4, 900); this._tone({ freq: 300, slide: -190, dur: 0.12, type: 'sawtooth', gain: 0.32 }); }
   hurt()   { this._tone({ freq: 220, slide: -160, dur: 0.24, type: 'square', gain: 0.45 }); }
+  // A fall is a thud, not a hit: the player should hear the ground, not a blade.
+  fell()   { this._tone({ freq: 120, slide: -70, dur: 0.14, type: 'sine', gain: 0.5 }); this._noise(0.06, 0.16, 240); }
+  // Locked gate: a dull double clank, so a refused exit reads as "not yet".
+  locked() { this._tone({ freq: 150, dur: 0.08, type: 'square', gain: 0.32 }); this._tone({ freq: 98, slide: -18, dur: 0.12, type: 'square', gain: 0.28 }); }
+  respawn() { this._tone({ freq: 660, slide: 240, dur: 0.12, type: 'triangle', gain: 0.4 }); }
   win()    { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this._tone({ freq: f, dur: 0.18, type: 'triangle', gain: 0.5 }), i * 110)); }
   lose()   { [392, 330, 262, 196].forEach((f, i) => setTimeout(() => this._tone({ freq: f, dur: 0.22, type: 'sawtooth', gain: 0.35 }), i * 140)); }
   bossWarn() { this._tone({ freq: 84, dur: 0.5, type: 'sawtooth', gain: 0.5 }); }
