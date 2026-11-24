@@ -18,6 +18,7 @@ const ROOM_SIZE = Number(process.env.GAMEFORGE_ROOM_SIZE ?? 20);
 
 function oneBot(n, stats) {
   return new Promise((resolve) => {
+    if (process.env.GAMEFORGE_QUIET !== '1' && n === 0) console.error(`[bot] connecting to ${URL}`);
     const ws = new WebSocket(URL);
     let id = null;
     let frames = 0;
