@@ -173,6 +173,12 @@ export class Room {
 export class RoomManager {
   constructor() {
     this.rooms = new Map();
+    // Timers, not a spin loop: a room with nothing in it must cost nothing.
+    // A delayed timer is caught up rather than made up for: the simulation is
+    // frame-stepped, so replaying 40 ticks at once after a stall would jump
+    // every player and charge them for time they never saw. The debt is capped
+    // so a long stall cannot spend the next minute running instantly.
+    this._last = Date.now();
     this._timer = setInterval(() => this._tick(), 1000 / TICK_HZ);
     this._timer.unref?.();
   }
@@ -196,7 +202,12 @@ export class RoomManager {
   }
 
   _tick() {
-    for (const room of this.rooms.values()) room.step();
+    const now = Date.now();
+    const behind = Math.min(8, Math.max(0, Math.round((now - this._last) / (1000 / TICK_HZ)) - 1));
+    this._last = now;
+    for (let i = 0; i <= behind; i++) {
+      for (const room of this.rooms.values()) room.step();
+    }
   }
 
   stats() {
