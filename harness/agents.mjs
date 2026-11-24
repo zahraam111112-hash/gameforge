@@ -126,8 +126,10 @@ async function runToolLoop({ root, fsTools, tools, messages, maxTurns, jsonHint,
         lang: wrote ? langOf(args.path) : undefined,
         // A shell command's output is the evidence a reader needs to trust the
         // step; a read_file's echo of the source is redundant with the file.
+        // A string stdout is passed through untouched: JSON.stringify turned every
+        // newline into a literal \n, so a 200-line diff arrived as one long line.
         output: (call.function.name === 'run' || call.function.name === 'run_sim' || failed)
-          ? clip(typeof result === 'string' ? result : JSON.stringify(result?.stdout ?? result), 1600)
+          ? clip(stdoutText(result), 1600)
           : undefined,
       });
       messages.push({
@@ -148,6 +150,15 @@ async function runToolLoop({ root, fsTools, tools, messages, maxTurns, jsonHint,
     return j;
   }
   return { content: last };
+}
+
+// Keep real line breaks in what the audience reads. Only serialize objects.
+function stdoutText(result) {
+  if (typeof result === 'string') return result;
+  const out = result?.stdout;
+  if (typeof out === 'string') return out;
+  if (out == null && result?.ok !== false && !result?.error) return '';
+  return JSON.stringify(out ?? result);
 }
 
 function langOf(file) {
