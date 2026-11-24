@@ -4,7 +4,12 @@
 import { World, makePlayer } from '../game/src/world.js';
 
 export const TICK_HZ = 30;
-export const MAX_PLAYERS = 200; // "hundreds of players" is a load-test target, not a goal
+// Measured ceiling for one room is far below "hundreds": every tick a room of N
+// sends a delta to N clients, so a packed room costs O(N²) messages. 200 players
+// in one room timed out every client. Players are sharded across rooms instead
+// (see RoomManager.join), so this is the size of one shard, not the site.
+export const MAX_PLAYERS = 100;
+const MAX_SHARDS = 20;
 
 const SPAWN_OFFSETS = Array.from({ length: 16 }, (_, i) => ({ x: 40 + (i % 8) * 48, y: 96 + Math.floor(i / 8) * 40 }));
 
@@ -161,6 +166,18 @@ export class RoomManager {
     const key = `${kind}:${level}`;
     if (!this.rooms.has(key)) this.rooms.set(key, new Room(kind, level));
     return this.rooms.get(key);
+  }
+
+  /** Places a player in the first shard of this level that has room.
+   *  A packed room is quadratic to broadcast, so a full room routes the next
+   *  player to `level#2` rather than refusing them or overloading the room. */
+  join(kind, level, id, name) {
+    for (let shard = 0; shard <= MAX_SHARDS; shard++) {
+      const key = shard === 0 ? level : `${level}#${shard + 1}`;
+      const room = this.get(kind, key);
+      if (room.players.size < MAX_PLAYERS && room.add(id, name)) return room;
+    }
+    return null;
   }
 
   _tick() {

@@ -117,8 +117,8 @@ wss.on('connection', (ws) => {
     if (msg.t === 'join') {
       const kind = msg.mode === 'royale' ? 'royale' : 'coop';
       const level = msg.level ?? 'arena';
-      ws.room = rooms.get(kind, level);
-      if (!ws.room.add(id, msg.name)) {
+      ws.room = rooms.join(kind, level, id, msg.name);
+      if (!ws.room) {
         ws.send(JSON.stringify({ t: 'error', error: 'room_full' }));
         ws.room = null; return;
       }

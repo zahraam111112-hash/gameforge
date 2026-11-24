@@ -41,9 +41,14 @@ function oneBot(n, stats) {
     }, 50);
 
     ws.on('open', () => {
+      // Without SPREAD every bot asks for the same level: that packs the fleet
+      // and makes the server itself apply its sharding, which is the real
+      // question ("can the site hold 200 at once?"). SPREAD models players who
+      // deliberately picked different rooms.
       const level = SPREAD ? `arena${Math.floor(n / ROOM_SIZE)}` : 'arena';
       ws.send(JSON.stringify({ t: 'join', mode: n % ROYALE_EVERY === 0 ? 'royale' : 'coop', level, name: `bot${n}` }));
     });
+    ws.on('close', () => { /* handled by done() */ });
     const peers = new Map();
     ws.on('message', (raw) => {
       let m;
