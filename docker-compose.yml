@@ -28,11 +28,15 @@ services:
       # http.get, not fetch: a fresh node process pays ~2-5s for fetch's bootstrap
       # (undici + DNS), which is longer than this timeout — the check then times
       # out against a server that is perfectly healthy.
+      # The timeout is generous because the check starts a new node process, and
+      # on a host shared with other projects that process can take 10s+ to boot
+      # while the server answers in 3ms. The measured server itself answers fast;
+      # what needs slack is the probe, not the service.
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/healthz',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
-      timeout: 5s
+      timeout: 25s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   harness:
     image: gameforge:local
