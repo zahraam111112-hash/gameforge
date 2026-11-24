@@ -2,10 +2,28 @@ import { TILE } from './util.js';
 
 /* Tile legend:
  *  '#' solid   '=' one-way platform   '.' empty
- *  'S' spawn   'L' level end (flag)
+ *  'S' spawn   'L' level end (flag)   'C' checkpoint pole
  *  'E' easy enemy   'M' medium enemy   'H' hard enemy   'B' boss
- *  'o' coin    'h' health   'C' checkpoint   'k' key   'D' locked door
- *  '^' spikes
+ *  'o' coin    'h' health   'k' key   '^' spikes   'D' locked door
+ *
+ *  'C' is a respawn pole, not scenery. parseLevel emits a 'checkpoint' spawn at
+ *  the tile's top-left +2 (the same x/y convention as 'E'/'M'/'H'), and
+ *  world.js builds an {type:'checkpoint', x, y, w:12, h:24, dead:false,
+ *  active:false} entity from it: `active` starts false, flips true the first
+ *  time a player overlaps it, and that latch is what _fallOut respawns on. Each
+ *  story stage carries exactly two poles — roughly 40% and 75% of the route —
+ *  always on the walking row, always over a solid '#' floor tile, and always at
+ *  least four columns clear of any '^' cluster.
+ *
+ *  'L' is the exit flag: parseLevel emits {type:'exit', x, y}, which world.js
+ *  widens to w:16/h:32 with dead:false. s1/s2/s3 each keep their one trailing
+ *  'L'; the arena carries exactly one, on its walking row, flush with the
+ *  far-right column that is backed by solid floor — and that gate stays locked
+ *  until every seeded arena wave is cleared (see World.exitUnlocked()).
+ *
+ *  Neither 'C' nor 'L' is solid ('#' and 'D' are the only solid tiles), so the
+ *  walking row keeps its width, grid columns stay put, and no enemy spawn index
+ *  moves when a pole or flag is added.
  */
 
 const P_FOREST = { sky1: '#0b1a2a', sky2: '#14324a', far: '#0e2635', near: '#123340', ground: '#23503f', accent: '#33e1c0' };
