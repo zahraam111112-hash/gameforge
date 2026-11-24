@@ -1,0 +1,10 @@
+import WebSocket from 'ws';
+const URL = process.env.GAMEFORGE_WS;
+console.log('[dbg] URL=', URL);
+const ws = new WebSocket(URL);
+let f=0;
+const t=setTimeout(()=>{console.log('[dbg] timeout frames=',f);process.exit(1)},15000);
+ws.on('open',()=>{console.log('[dbg] open');ws.send(JSON.stringify({t:'join',mode:'coop',level:'arena',name:'dbg'}))});
+ws.on('message',r=>{const m=JSON.parse(r);f++;if(f<4)console.log('[dbg]',m.t,f,JSON.stringify(m).slice(0,120));if(f===20){clearTimeout(t);console.log('[dbg] ok frames',f);process.exit(0)}});
+ws.on('error',e=>{console.log('[dbg] err',e.message);clearTimeout(t);process.exit(1)});
+ws.on('close',(c,r)=>{console.log('[dbg] close',c,String(r).slice(0,100));});

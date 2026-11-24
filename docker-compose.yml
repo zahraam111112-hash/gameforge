@@ -83,7 +83,7 @@ services:
       # the pids limit. At 512 a 200-bot fleet hit the ceiling and the fleet
       # itself, not the server, was what timed out.
       resources:
-        limits: { cpus: "2.00", memory: 1536M, pids: 4096 }
+        limits: { cpus: "2.00", memory: 1536M, pids: 2048 }
     security_opt: ["no-new-privileges:true"]
 
 networks:
