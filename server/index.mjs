@@ -1,4 +1,5 @@
 import http from 'node:http';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,9 +22,29 @@ const MIME = {
   '.ico': 'image/x-icon', '.map': 'application/json', '.woff2': 'font/woff2',
 };
 
+// Every response states its own length. With chunked framing a client on a lossy
+// link cannot distinguish "still arriving" from "finished", and Caddy has to hold
+// the whole body before it can re-frame it. Bodies over 1 KB are gzipped here
+// rather than by Caddy for the same reason: fewer packets is the whole point,
+// because this public link loses enough of them to stall a 30 KB body outright.
+function gzipIfWanted(req, buf) {
+  const accept = String(req?.headers['accept-encoding'] ?? '');
+  if (buf.length < 1024 || !/\bgzip\b/.test(accept)) return Promise.resolve(null);
+  return new Promise((resolve) => zlib.gzip(buf, (err, gz) => resolve(err ? null : gz)));
+}
+
 function send(res, code, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-cache' });
-  res.end(body);
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+  const headers = { 'content-type': type, 'cache-control': 'no-cache' };
+  gzipIfWanted(res.req, buf).then((gz) => {
+    if (gz) {
+      headers['content-encoding'] = 'gzip';
+      headers.vary = 'Accept-Encoding';
+    }
+    headers['content-length'] = (gz ?? buf).length;
+    res.writeHead(code, headers);
+    res.end(gz ?? buf);
+  });
 }
 
 function readJsonBody(req, limit = 256 * 1024) {
@@ -60,16 +81,27 @@ function safeJoin(base, urlPath) {
   return p;
 }
 
+const COMPRESSIBLE = new Set(['.html', '.js', '.mjs', '.css', '.json', '.svg', '.map', '.md']);
+
 function fileRes(res, file) {
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'not found', 'text/plain; charset=utf-8');
     const ext = path.extname(file).toLowerCase();
-    res.writeHead(200, {
+    const headers = {
       'content-type': MIME[ext] ?? 'application/octet-stream',
       'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
       'x-content-type-options': 'nosniff',
+    };
+    const gz = COMPRESSIBLE.has(ext) ? gzipIfWanted(res.req, data) : Promise.resolve(null);
+    gz.then((compressed) => {
+      if (compressed) {
+        headers['content-encoding'] = 'gzip';
+        headers.vary = 'Accept-Encoding';
+      }
+      headers['content-length'] = (compressed ?? data).length;
+      res.writeHead(200, headers);
+      res.end(compressed ?? data);
     });
-    res.end(data);
   });
 }
 
@@ -113,9 +145,21 @@ const server = http.createServer(async (req, res) => {
       // Parse each line rather than joining raw text: one torn line at the end of
       // an append-only file used to make the whole endpoint invalid JSON, which
       // blanked the public devlog with no error anywhere.
+      // 500 full entries was 226 KB: more than this public link can carry in one
+      // response, so the endpoint timed out and the page rendered nothing at all.
       const entries = [];
-      for (const line of data.trim().split('\n').slice(-500)) {
-        try { entries.push(JSON.parse(line)); } catch { /* torn tail */ }
+      for (const line of data.trim().split('\n').slice(-60)) {
+        try {
+          const e = JSON.parse(line);
+          if (typeof e.why === 'string' && e.why.length > 700) e.why = e.why.slice(0, 700) + '…';
+          if (typeof e.title === 'string' && e.title.length > 220) e.title = e.title.slice(0, 220) + '…';
+          // Release bullets are 20-40 lines per entry and 67 KB of the payload;
+          // a card shows six, and the repository has the rest.
+          if (Array.isArray(e.changes)) {
+            e.changes = e.changes.slice(0, 6).map((c) => (String(c).length > 180 ? String(c).slice(0, 180) + '…' : c));
+          }
+          entries.push(e);
+        } catch { /* torn tail */ }
       }
       send(res, 200, JSON.stringify(entries));
     });
@@ -134,7 +178,10 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/activity') {
     const f = path.join(ROOT, 'devlog', 'activity.jsonl');
     const from = url.searchParams.get('from');
-    const limit = Math.min(400, Math.max(1, Number(url.searchParams.get('limit') ?? 120)));
+    const asked = Math.min(400, Math.max(1, Number(url.searchParams.get('limit') ?? 40)));
+    // A fresh page load has no cursor: that fill is a preview, so it is capped
+    // small enough to cross a lossy link. Everything after it streams by cursor.
+    const limit = from == null ? Math.min(asked, 25) : asked;
     fs.readFile(f, (err, buf) => {
       if (err) return send(res, 200, JSON.stringify({ cursor: 0, events: [], active: false }));
       const size = buf.length;

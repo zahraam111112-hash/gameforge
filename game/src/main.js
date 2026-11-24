@@ -131,13 +131,13 @@ function startOnline(kind) {
   };
 }
 
-function respawn() {
-  if (!player?.checkpoint) { player.x = world.spawnPoint.x; player.y = world.spawnPoint.y; }
-  else { player.x = player.checkpoint.x; player.y = player.checkpoint.y; }
-  player.hp = player.maxHp;
-  player.energy = 100;
-  world.status = 'playing';
-}
+/* There is exactly one respawn policy and it lives in the engine: world.js
+ * _fallOut() bills PIT_DAMAGE, puts the player back on their last pole and
+ * grants RESPAWN_INVULN, then emits 'respawn' so this file can show it. The
+ * free-full-heal respawn() that used to sit here (hp = maxHp, energy = 100,
+ * status = 'playing') was never called, contradicted _fallOut, and was the only
+ * other reader of p.checkpoint — one rule, one owner, no duplicate to wire by
+ * accident. Falling is a cost, not a free life; see drainEvents' 'respawn'. */
 
 // Fixed 60 Hz simulation; render is free-running.
 let acc = 0;

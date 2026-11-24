@@ -36,8 +36,51 @@ export const STRIKE_DAMAGE = 1;
  *  swing against the boss' 24 hp is eight contact exchanges — a short, sharp
  *  gate rather than a grind. Everything else keeps taking base strike damage,
  *  so story enemies and their sims are unchanged. The multiplier is applied in
- *  damageEnemy alone; bounty stays single-source. */
+ *  damageEnemy alone; bounty stays single-source.
+ *
+ *  It is a *strike* multiplier, not a general boss weakness: see DAMAGE_SOURCE
+ *  below. A stomp or a hazard hit on a boss takes its base damage, because the
+ *  comment on STOMP_DAMAGE ("a boss is not beaten by bouncing") has to be true
+ *  in the numbers, not just in the prose. */
 export const BOSS_DAMAGE_MULT = 3;
+
+/** Where a hit came from. Every damageEnemy caller names its source so the boss
+ *  multiplier (and the kill event's byStrike flag) can be decided from the
+ *  *cause* of the damage rather than from a boolean the caller happens to pass.
+ *  'strike' is the player's blade — the only one that gets BOSS_DAMAGE_MULT. */
+export const DAMAGE_SOURCE = Object.freeze({
+  STRIKE: 'strike',  // player's attack swing
+  STOMP: 'stomp',    // bounce off an enemy's head
+  HAZARD: 'hazard',  // world hazard (spikes and anything else that bites)
+  FALL: 'fall',      // walked/fell out of the stage
+});
+
+/** Sources that deal flat damage and never get the boss multiplier. Stomping a
+ *  boss must stay a last-resort poke (4 × 2 hp is 8 of 24), and a hazard that
+ *  flipped out of the world for you cannot be allowed to out-damage the blade.
+ *  Anything else — including an unknown source — is treated as a strike so a
+ *  future caller that forgets to pass one keeps the honest, harder-hitting
+ *  default rather than silently nerfing the player. */
+const NO_BOSS_MULT = new Set([DAMAGE_SOURCE.STOMP, DAMAGE_SOURCE.HAZARD, DAMAGE_SOURCE.FALL]);
+
+/** Normalise anything a caller might pass into a known source string. Kept
+ *  exported so tests/harness can reason about the same mapping. */
+export function damageSource(value) {
+  if (typeof value === 'string') {
+    const s = value.toLowerCase();
+    for (const known of Object.values(DAMAGE_SOURCE)) if (known === s) return known;
+  }
+  return DAMAGE_SOURCE.STRIKE;
+}
+
+/** How hard one hit of `source` lands on `e`, before any per-hit clamping. A
+ *  non-boss always takes base damage; a boss only takes the multiplier from
+ *  the strike sources, so eight strikes (8 × 3 = 24) end it and four stomps
+ *  (4 × 2 = 8) do not. Pure, so it can be asserted on its own. */
+export function damageMultiplier(e, source = DAMAGE_SOURCE.STRIKE) {
+  if (!e || !e.boss) return 1;
+  return NO_BOSS_MULT.has(damageSource(source)) ? 1 : BOSS_DAMAGE_MULT;
+}
 
 /** Bosses are HP sponges by design, so chip damage must not stack up: the
  *  i-frames on a non-boss also protect the boss, which paces the fight to the
@@ -405,7 +448,11 @@ export class World {
       // real kill from a fall. Falling now pays nothing (attacker is null),
       // marks e.fell for the renderer, and still routes through damageEnemy so
       // there is exactly one place that decides what death means.
-      if (e.y > this.height + 64) this.damageEnemy(e, e.hp, 0, null, { fell: true });
+      if (e.y > this.height + 64) {
+        // source: FALL — pays no bounty, gets the 'fell' cue and, even against a
+        // boss, deals flat damage so a boss cannot be cheesed into a pit for 3×.
+        this.damageEnemy(e, e.hp, 0, null, { source: DAMAGE_SOURCE.FALL, fell: true });
+      }
     }
   }
 
@@ -470,7 +517,9 @@ export class World {
       const hit = { x: p.x + (dirForDash > 0 ? p.w - 2 : -14), y: p.y + 2, w: 18, h: p.h - 4 };
       for (const e of this.entities) {
         if (e.kind !== 'enemy' || e.dead) continue;
-        if (aabb(hit, e)) this.damageEnemy(e, STRIKE_DAMAGE, dirForDash, p);
+        if (aabb(hit, e)) {
+          this.damageEnemy(e, STRIKE_DAMAGE, dirForDash, p, { source: DAMAGE_SOURCE.STRIKE });
+        }
       }
     }
     if (p.attackT > 0) p.attackT--;
@@ -509,7 +558,8 @@ export class World {
       if (aabb(p, e)) {
         const stomping = p.vy > 1 && p.y + p.h - p.vy <= e.y + 4;
         if (stomping) {
-          this.damageEnemy(e, STOMP_DAMAGE, 0, p, { strike: false });
+          // A bounce is never a strike: flat STOMP_DAMAGE even on a boss.
+          this.damageEnemy(e, STOMP_DAMAGE, 0, p, { source: DAMAGE_SOURCE.STOMP });
           p.vy = -7; p.energy = Math.min(100, p.energy + 12);
         } else {
           this.hurtPlayer(p, e.dmg, e.x + e.w / 2, 'enemy');
@@ -571,14 +621,29 @@ export class World {
   }
 
   /** The one place enemy health changes. The boss takes BOSS_DAMAGE_MULT per
-   *  hit and its own i-frame window, and — unlike before — that window applies
-   *  to the boss too: without it, two overlapping co-op attackers could chip a
-   *  boss every frame and skip the whole escalation. Non-boss enemies behave
-   *  exactly as they did (multiplier 1, 8 frame i-frames). */
+   *  *strike* and its own i-frame window, and — unlike before — that window
+   *  applies to the boss too: without it, two overlapping co-op attackers could
+   *  chip a boss every frame and skip the whole escalation. Non-boss enemies
+   *  behave exactly as they did (multiplier 1, 8 frame i-frames).
+   *
+   *  opts.source says what caused the hit (see DAMAGE_SOURCE): only 'strike'
+   *  gets the boss multiplier, so a stomp hits a boss for STOMP_DAMAGE flat and
+   *  a hazard/fall pays flat too. Callers that pass nothing are treated as a
+   *  strike, which keeps the old numbers for any path that has not been
+   *  audited yet. The legacy opts.strike boolean is still honoured as a hint
+   *  (false === stomp) so an out-of-tree caller cannot silently gain the
+   *  multiplier, and the kill event's byStrike flag is derived from the source
+   *  rather than trusting each caller to keep a boolean in sync. */
   damageEnemy(e, amount, knockDir = 0, attacker = null, opts = {}) {
+    if (!e || e.dead) return false;
     if (e.hurtT > 0) return false;
-    const fell = Boolean(opts.fell);
-    const mult = e.boss ? BOSS_DAMAGE_MULT : 1;
+    const fell = Boolean(opts.fell ?? opts.source === DAMAGE_SOURCE.FALL);
+    // Legacy hint: {strike:false} used to be how the stomp path opted out of
+    // the multiplier. Map it onto the source vocabulary instead of dropping it.
+    const source = opts.source !== undefined
+      ? damageSource(opts.source)
+      : (opts.strike === false ? DAMAGE_SOURCE.STOMP : DAMAGE_SOURCE.STRIKE);
+    const mult = damageMultiplier(e, source);
     e.hp -= amount * mult;
     e.hurtT = e.boss ? BOSS_HURT_FRAMES : 8;
     if (knockDir) e.vx = knockDir * 2.2;
@@ -601,8 +666,11 @@ export class World {
           // attacker is the player object the caller acted for, null for a
           // world-side death (an enemy that walked into a hazard).
           attacker: attacker?.id ?? 'player',
-          // True when the strike took the last hp on this frame, not a stomp.
-          byStrike: Boolean(attacker) && opts.strike !== false,
+          // True when the blade took the last hp on this frame — not a stomp,
+          // a hazard or a fall. Derived from the source that actually did the
+          // damage, so the event can never disagree with the multiplier above.
+          source,
+          byStrike: source === DAMAGE_SOURCE.STRIKE && Boolean(attacker),
           x: Math.round(e.x),
           y: Math.round(e.y),
         });
