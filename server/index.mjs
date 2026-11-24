@@ -120,11 +120,20 @@ const server = http.createServer(async (req, res) => {
     return fs.readdir(dir, { withFileTypes: true }, (err, ents) => {
       if (err) return send(res, 200, JSON.stringify({ builds: [] }));
       const builds = ents
-        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        // `latest` is no longer a directory: it used to be a tree that the
+        // harness rewrote in place, which briefly served pages whose assets had
+        // been deleted. It is now a pointer file (LATEST.json) plus its own
+        // `.tmp` sibling, and both are filtered out here — the version it names
+        // appears below under its real version number.
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !d.name.endsWith('.tmp'))
         .map((d) => {
-          const statue = fs.statSync(path.join(dir, d.name));
-          return { version: d.name, at: statue.mtime.toISOString(), playable: fs.existsSync(path.join(dir, d.name, 'index.html')) };
+          const full = path.join(dir, d.name);
+          let statue;
+          try { statue = fs.statSync(full); } catch { return null; }
+          if (!statue.isDirectory()) return null;
+          return { version: d.name, at: statue.mtime.toISOString(), playable: fs.existsSync(path.join(full, 'index.html')) };
         })
+        .filter(Boolean)
         .filter((b) => b.playable)
         .sort((a, b) => (a.version === 'latest' ? 1 : b.version === 'latest' ? -1 : b.version.localeCompare(a.version, undefined, { numeric: true })));
       send(res, 200, JSON.stringify({ builds }));
@@ -211,8 +220,37 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/' || p === '') return fileRes(res, path.join(PUBLIC, 'index.html'));
   if (p.startsWith('/game')) {
-    const rel = p === '/game' ? '/game/latest/' : p;
-    let file = safeJoin(PUBLIC, rel);
+    // `/game/latest/...` resolves through the pointer the harness swaps, so a
+    // visitor always lands on a complete build rather than one mid-publish.
+    if (p === '/game' || p === '/game/' || p.startsWith('/game/latest/')) {
+      const rest = p.replace(/^\/game(\/latest)?\/?/, '');
+      const serveFrom = (version) => {
+        const file = safeJoin(PUBLIC, `/game/${version}/${rest || 'index.html'}`);
+        if (!file || !fs.existsSync(file)) return false;
+        const f = fs.statSync(file).isDirectory() ? path.join(file, 'index.html') : file;
+        if (!fs.existsSync(f)) return false;
+        fileRes(res, f);
+        return true;
+      };
+      return fs.readFile(path.join(PUBLIC, 'game', 'LATEST.json'), 'utf8', (err, body) => {
+        let version = null;
+        if (!err) { try { version = JSON.parse(body).version; } catch { /* torn */ } }
+        if (version && serveFrom(version)) return;
+        // No pointer, or it names a build that is not readable: fall back to the
+        // newest build actually on disk. A visitor asked for "latest", and any
+        // complete build beats a 404 while a publish is settling.
+        let names = [];
+        try {
+          names = fs.readdirSync(path.join(PUBLIC, 'game'), { withFileTypes: true })
+            .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !d.name.endsWith('.tmp'))
+            .map((d) => d.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        } catch { /* no game dir at all */ }
+        for (const name of names) if (serveFrom(name)) return;
+        return send(res, 404, 'not found', 'text/plain');
+      });
+    }
+    let file = safeJoin(PUBLIC, p);
     if (file && fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
     if (file) return fileRes(res, file);
     return send(res, 404, 'not found', 'text/plain');

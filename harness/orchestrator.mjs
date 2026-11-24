@@ -152,25 +152,43 @@ async function main() {
       vNext.roadmap = vBefore.roadmap ?? vNext.roadmap;
       writeVersion(vNext);
 
-      // Archive the playable build so the site can serve older versions.
-      // Builds land in game/.stage; only a verified build is promoted.
+      // Publish the playable build, atomically.
+      //
+      // This used to copy file-by-file into the live `latest/` directory, deleting
+      // each destination first. Between the delete and the copy the public site
+      // served an `index.html` whose `assets/` directory was already gone — and
+      // because the server answers from that same path, a visitor arriving in
+      // that window got no game at all. A cage test caught it as a 90 s
+      // page.goto timeout; any real visitor would have hit the same thing.
+      //
+      // Now the build lands in its own versioned directory, written to a temp
+      // name and moved into place in one rename, and `latest` is a small pointer
+      // file that the server swaps in one rename too. A reader sees either the
+      // whole old build or the whole new one, never a half-written tree, and the
+      // previous build keeps serving until the instant the new one is complete.
       const stage = path.join(ROOT, 'game', '.stage');
-      const latest = path.join(PUBLISHED, 'latest');
-      fs.mkdirSync(latest, { recursive: true });
-      if (fs.existsSync(stage)) {
-        for (const name of fs.readdirSync(stage)) {
-          const from = path.join(stage, name);
-          const to = path.join(latest, name);
-          if (fs.statSync(from).isDirectory()) { fs.rmSync(to, { recursive: true, force: true }); fs.cpSync(from, to, { recursive: true }); }
-          else fs.copyFileSync(from, to);
-        }
-      }
+      const live = path.join(PUBLISHED, vNext.version);
+      const stageTmp = live + '.tmp';
+      fs.rmSync(stageTmp, { recursive: true, force: true });
+      fs.mkdirSync(stageTmp, { recursive: true });
+      if (fs.existsSync(stage)) copyDir(stage, stageTmp);
       fs.rmSync(stage, { recursive: true, force: true });
-      const archive = path.join(PUBLISHED, vNext.version);
-      if (fs.existsSync(latest)) {
-        fs.rmSync(archive, { recursive: true, force: true });
-        fs.mkdirSync(archive, { recursive: true });
-        copyDir(latest, archive);
+      fs.rmSync(live, { recursive: true, force: true });
+      fs.renameSync(stageTmp, live);
+
+      // Point `latest` at it. Written to a temp file first so the swap is one
+      // rename: a request in flight gets the old version or the new, not an
+      // empty or half-written file.
+      const ptr = path.join(PUBLISHED, 'LATEST.json');
+      const ptrTmp = ptr + '.tmp';
+      fs.writeFileSync(ptrTmp, JSON.stringify({ version: vNext.version, at: new Date().toISOString() }));
+      fs.renameSync(ptrTmp, ptr);
+
+      // The old `latest` directory was the thing that broke under load. Remove
+      // it once the pointer is live, so nothing can resolve to a stale tree.
+      const legacyLatest = path.join(PUBLISHED, 'latest');
+      if (fs.lstatSync(legacyLatest, { throwIfNoEntry: false })?.isDirectory()) {
+        fs.rmSync(legacyLatest, { recursive: true, force: true });
       }
 
       devlog.append({
