@@ -1,4 +1,4 @@
-import { World, makePlayer } from './world.js';
+import { World, makePlayer, NO_EVENTS, EXIT_LOCKED_COOLDOWN } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';

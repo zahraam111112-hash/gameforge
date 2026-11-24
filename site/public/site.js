@@ -24,8 +24,14 @@ async function loadVersion() {
 async function loadVersions() {
   // The picker is built from what is actually on disk, so every archived build
   // is reachable even if it predates the devlog entry that described it.
-  const [{ builds }, data] = await Promise.all([json('/api/builds', { builds: [] }), json('/api/devlog', [])]);
-  const byVersion = new Map(data.filter((e) => e.kind === 'release' || e.kind === 'build').map((e) => [e.version, e]));
+  //
+  // The devlog is NOT awaited here. It is the heaviest response on the site and
+  // this link loses enough packets that it often takes 30-100 s or fails; when
+  // it was awaited first the picker stayed empty for that whole time and the
+  // page looked like it had no games. Release notes are decoration on the
+  // cards, so they arrive later and fill themselves in.
+  const { builds } = await json('/api/builds', { builds: [] });
+  let byVersion = new Map();
   const sel = $('#version-select');
   sel.innerHTML = '';
   for (const b of builds) {
@@ -40,10 +46,14 @@ async function loadVersions() {
     list.innerHTML = '<p class="sub">No archived builds yet — the first stable release will appear here.</p>';
     return;
   }
-  list.innerHTML = builds.map((b) => {
-    const rel = byVersion.get(b.version);
-    const href = `/game/${encodeURIComponent(b.version)}/index.html`;
-    return `
+
+  // Paint title/date-only cards immediately, then upgrade them in place when
+  // the release notes land. Every card is already playable at this point.
+  const paint = () => {
+    list.innerHTML = builds.map((b) => {
+      const rel = byVersion.get(b.version);
+      const href = `/game/${encodeURIComponent(b.version)}/index.html`;
+      return `
     <article class="card">
       <span class="tag">${escapeHtml(b.version)}</span>
       <h3><a href="${href}" target="_blank" rel="noopener">${escapeHtml(rel?.title ?? `Build ${b.version}`)}</a></h3>
@@ -51,7 +61,15 @@ async function loadVersions() {
       ${rel?.changes ? `<ul>${rel.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
       <p class="card-play"><a href="${href}" target="_blank" rel="noopener">Play this build ↗</a></p>
     </article>`;
-  }).join('');
+    }).join('');
+  };
+  paint();
+
+  json('/api/devlog', []).then((data) => {
+    if (!Array.isArray(data) || !data.length) return;
+    byVersion = new Map(data.filter((e) => e.kind === 'release' || e.kind === 'build').map((e) => [e.version, e]));
+    paint();
+  });
 }
 
 function escapeHtml(s) {
