@@ -1,13 +1,13 @@
 {
-  "version": "0.1.7",
-  "builds": 8,
-  "updatedAt": "2026-11-24T02:59:29.322Z",
+  "version": "0.1.8",
+  "builds": 9,
+  "updatedAt": "2026-11-24T03:42:03.918Z",
   "tests": {
     "total": 12,
     "passed": 12
   },
-  "theme": "Wire It For Real — Prove It Before The Changelog",
-  "round": 7,
+  "theme": "Call Sites First",
+  "round": 8,
   "roadmap": [
     "Complete story act one with a three-phase boss",
     "Ranked battle royale with server-authoritative combat",
